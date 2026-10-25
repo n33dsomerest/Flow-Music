@@ -171,11 +171,14 @@ class LocalPlaylistService {
   }
 
   String? _extractPlaylistId(String input) {
-    if (input.contains('list=')) {
-      final uri = Uri.tryParse(input);
+    final trimmed = input.trim();
+    if (trimmed.contains('list=')) {
+      final match = RegExp(r'[?&]list=([a-zA-Z0-9_-]+)').firstMatch(trimmed);
+      if (match != null) return match.group(1);
+      final uri = Uri.tryParse(trimmed);
       return uri?.queryParameters['list'];
     }
-    return input.trim();
+    return trimmed;
   }
 
   Future<void> _savePlaylist(LocalPlaylist playlist) async {
