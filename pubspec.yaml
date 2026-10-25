@@ -1,0 +1,46 @@
+name: flow_music
+description: "A modern, ad-free music streaming app for iOS and Android powered by YouTube Music and REA InnerTube API."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Networking & HTTP
+  http: ^1.2.2
+
+  # Embedded JavaScript Engine for YouTube Cipher & n-sig solver
+  flutter_js: ^0.8.1
+
+  # Audio Playback & OS Background Services
+  just_audio: ^0.9.40
+  just_audio_background: ^0.0.1-beta.13
+  audio_service: ^0.18.17
+  audio_session: ^0.1.21
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+
+  # Storage & Caching
+  shared_preferences: ^2.3.2
+  path_provider: ^2.1.4
+  cached_network_image: ^3.3.1
+
+  # Utilities & Cryptography
+  crypto: ^3.0.3
+  intl: ^0.19.0
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/

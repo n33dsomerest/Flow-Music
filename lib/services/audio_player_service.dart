@@ -1,0 +1,160 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart';
+import '../data/models/song_model.dart';
+import '../data/sources/innertube_api_client.dart';
+
+enum PlaybackStatus { idle, loading, playing, paused, completed, error }
+
+/// Background-capable Audio Player Service managing queue, streaming, and playback states.
+class AudioPlayerService {
+  static final AudioPlayerService _instance = AudioPlayerService._internal();
+  factory AudioPlayerService() => _instance;
+  AudioPlayerService._internal();
+
+  final AudioPlayer _player = AudioPlayer();
+  final InnerTubeApiClient _apiClient = InnerTubeApiClient();
+
+  // Queue state
+  final List<SongModel> _queue = [];
+  int _currentIndex = -1;
+  bool _isRadioEnabled = true;
+
+  // Stream controllers
+  final _songController = StreamController<SongModel?>.broadcast();
+  final _statusController = StreamController<PlaybackStatus>.broadcast();
+  final _queueController = StreamController<List<SongModel>>.broadcast();
+
+  // Public streams
+  Stream<SongModel?> get currentSongStream => _songController.stream;
+  Stream<PlaybackStatus> get statusStream => _statusController.stream;
+  Stream<List<SongModel>> get queueStream => _queueController.stream;
+  Stream<Duration> get positionStream => _player.positionStream;
+  Stream<Duration?> get durationStream => _player.durationStream;
+  Stream<Duration> get bufferedPositionStream => _player.bufferedPositionStream;
+
+  SongModel? get currentSong => _currentIndex >= 0 && _currentIndex < _queue.length ? _queue[_currentIndex] : null;
+  bool get isPlaying => _player.playing;
+  List<SongModel> get queue => List.unmodifiable(_queue);
+
+  Future<void> init() async {
+    // Configure OS Audio Session for background playback and headphone disconnect handling
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.music());
+
+    // Listen to player state changes
+    _player.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.loading ||
+          state.processingState == ProcessingState.buffering) {
+        _statusController.add(PlaybackStatus.loading);
+      } else if (state.processingState == ProcessingState.completed) {
+        _statusController.add(PlaybackStatus.completed);
+        skipToNext(); // Auto play next track
+      } else if (state.playing) {
+        _statusController.add(PlaybackStatus.playing);
+      } else {
+        _statusController.add(PlaybackStatus.paused);
+      }
+    });
+  }
+
+  /// Play a song immediately, replacing or prepending the queue.
+  Future<void> playSong(SongModel song) async {
+    _queue.clear();
+    _queue.add(song);
+    _currentIndex = 0;
+    _queueController.add(_queue);
+    await _loadAndPlayCurrent();
+  }
+
+  /// Add a song to play next or end of queue.
+  void addToQueue(SongModel song) {
+    _queue.add(song);
+    _queueController.add(_queue);
+    if (_currentIndex == -1) {
+      _currentIndex = 0;
+      _loadAndPlayCurrent();
+    }
+  }
+
+  /// Play an entire list of songs.
+  Future<void> playPlaylist(List<SongModel> songs, {int initialIndex = 0}) async {
+    if (songs.isEmpty) return;
+    _queue.clear();
+    _queue.addAll(songs);
+    _currentIndex = initialIndex.clamp(0, _queue.length - 1);
+    _queueController.add(_queue);
+    await _loadAndPlayCurrent();
+  }
+
+  /// Skip to next song in queue or fetch radio suggestions.
+  Future<void> skipToNext() async {
+    if (_currentIndex + 1 < _queue.length) {
+      _currentIndex++;
+      await _loadAndPlayCurrent();
+    } else if (_isRadioEnabled && currentSong != null) {
+      // Auto fetch endless radio when queue finishes
+      _statusController.add(PlaybackStatus.loading);
+      final suggestions = await _apiClient.getRadioQueue(currentSong!.id);
+      if (suggestions.isNotEmpty) {
+        _queue.addAll(suggestions);
+        _queueController.add(_queue);
+        _currentIndex++;
+        await _loadAndPlayCurrent();
+      }
+    }
+  }
+
+  /// Skip to previous song.
+  Future<void> skipToPrevious() async {
+    if (_player.position.inSeconds > 3) {
+      // If played more than 3 seconds, restart current track
+      await _player.seek(Duration.zero);
+    } else if (_currentIndex > 0) {
+      _currentIndex--;
+      await _loadAndPlayCurrent();
+    }
+  }
+
+  Future<void> play() async => await _player.play();
+  Future<void> pause() async => await _player.pause();
+  Future<void> seek(Duration position) async => await _player.seek(position);
+
+  /// Load stream URL via REA InnerTube client and play.
+  Future<void> _loadAndPlayCurrent() async {
+    final song = currentSong;
+    if (song == null) return;
+
+    _songController.add(song);
+    _statusController.add(PlaybackStatus.loading);
+
+    try {
+      // Resolve direct stream URL using InnerTube & Cipher Resolver
+      final streamInfo = await _apiClient.getStreamInfo(song.id);
+      if (streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
+        await _player.setUrl(
+          streamInfo.streamUrl,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://music.youtube.com/',
+          },
+        );
+        await _player.play();
+      } else {
+        _statusController.add(PlaybackStatus.error);
+        debugPrint('[AudioPlayerService] Failed to resolve stream for ${song.id}');
+      }
+    } catch (e) {
+      debugPrint('[AudioPlayerService] Playback error: $e');
+      _statusController.add(PlaybackStatus.error);
+    }
+  }
+
+  void dispose() {
+    _player.dispose();
+    _songController.close();
+    _statusController.close();
+    _queueController.close();
+  }
+}
