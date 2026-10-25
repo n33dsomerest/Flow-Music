@@ -29,9 +29,11 @@ jobs:
 
       - name: Configure Android Native Platform
         run: |
+          cp -r lib /tmp/lib_backup 2>/dev/null || true
           cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml 2>/dev/null || true
-          flutter create . --platforms=android --org com.flowmusic
+          flutter create . --project-name flow_music --platforms=android --org com.flowmusic
           cp /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml 2>/dev/null || true
+          cp -r /tmp/lib_backup/* lib/ 2>/dev/null || true
 
       - name: Install Dependencies
         run: flutter pub get
@@ -61,9 +63,11 @@ jobs:
 
       - name: Configure iOS Native Platform & Xcode Project
         run: |
+          cp -r lib /tmp/lib_backup 2>/dev/null || true
           cp ios/Runner/Info.plist /tmp/Info.plist 2>/dev/null || true
-          flutter create . --platforms=ios --org com.flowmusic
+          flutter create . --project-name flow_music --platforms=ios --org com.flowmusic
           cp /tmp/Info.plist ios/Runner/Info.plist 2>/dev/null || true
+          cp -r /tmp/lib_backup/* lib/ 2>/dev/null || true
 
       - name: Install Dependencies & Pods
         run: |
