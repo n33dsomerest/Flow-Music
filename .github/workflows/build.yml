@@ -34,6 +34,10 @@ jobs:
           flutter create . --project-name flow_music --platforms=android --org com.flowmusic
           cp /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml 2>/dev/null || true
           cp -r /tmp/lib_backup/* lib/ 2>/dev/null || true
+          # Ensure minSdk is at least 21 for flutter_js and just_audio
+          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' android/app/build.gradle 2>/dev/null || true
+          sed -i 's/minSdk = .*/minSdk = 21/g' android/app/build.gradle 2>/dev/null || true
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle 2>/dev/null || true
 
       - name: Install Dependencies
         run: flutter pub get
