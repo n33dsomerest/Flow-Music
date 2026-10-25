@@ -27,11 +27,17 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Configure Android Native Platform
+        run: |
+          cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml 2>/dev/null || true
+          flutter create . --platforms=android --org com.flowmusic
+          cp /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml 2>/dev/null || true
+
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Build Universal APK
-        run: flutter build apk --release --split-per-abi=false
+        run: flutter build apk --release
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
@@ -53,8 +59,17 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Configure iOS Native Platform & Xcode Project
+        run: |
+          cp ios/Runner/Info.plist /tmp/Info.plist 2>/dev/null || true
+          flutter create . --platforms=ios --org com.flowmusic
+          cp /tmp/Info.plist ios/Runner/Info.plist 2>/dev/null || true
+
+      - name: Install Dependencies & Pods
+        run: |
+          flutter pub get
+          cd ios && pod install --repo-update || true
+          cd ..
 
       - name: Build iOS Application (No Code-sign)
         run: flutter build ios --release --no-codesign
