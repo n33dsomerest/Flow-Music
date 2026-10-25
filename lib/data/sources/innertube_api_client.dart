@@ -7,7 +7,9 @@ import '../models/song_model.dart';
 import '../models/stream_info_model.dart';
 
 /// Client-Side Direct InnerTube API Client.
-/// Communicates directly with YouTube Music endpoints using dynamic InnerTube API key and recursive JSON parser.
+/// Communicates directly with YouTube Music endpoints using dynamic InnerTube API key,
+/// multi-client fallback streaming (ANDROID_MUSIC / IOS / TVHTML5 / ANDROID_VR / Piped),
+/// and recursive JSON parser.
 class InnerTubeApiClient {
   final http.Client _httpClient;
   final CipherResolver _cipherResolver;
@@ -57,11 +59,18 @@ class InnerTubeApiClient {
   }
 
   /// Helper to send authenticated POST request to InnerTube endpoint.
-  Future<http.Response> _postInnerTube(String endpoint, Map<String, dynamic> payload) async {
+  Future<http.Response> _postInnerTube(
+    String endpoint,
+    Map<String, dynamic> payload, {
+    Map<String, String>? customHeaders,
+  }) async {
     final apiKey = await _ensureApiKey();
     final url = Uri.parse('$endpoint?key=$apiKey&prettyPrint=false');
 
-    final headers = Map<String, String>.from(ApiConstants.defaultHeaders);
+    final headers = customHeaders != null
+        ? Map<String, String>.from(customHeaders)
+        : Map<String, String>.from(ApiConstants.defaultHeaders);
+
     headers['X-Goog-Api-Key'] = apiKey;
     if (_visitorData != null) {
       headers['X-Goog-Visitor-Id'] = _visitorData!;
@@ -98,26 +107,145 @@ class InnerTubeApiClient {
     }
   }
 
-  /// Get direct audio stream URL and format details for a specific video/song.
+  /// Get direct audio stream URL with Multi-Tier Fallback:
+  /// 1. ANDROID_MUSIC (cleanest direct opus/m4a audio, unencrypted, no PO-Token needed)
+  /// 2. IOS (pristine AAC 128kbps audio, direct unencrypted url)
+  /// 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER (unthrottled TV player)
+  /// 4. ANDROID_VR (Oculus client)
+  /// 5. Piped Public Proxy fallback
+  /// 6. WEB_REMIX with cipher decipher
   Future<StreamInfo?> getStreamInfo(String videoId) async {
-    final payload = ApiConstants.defaultClientContext();
-    payload['videoId'] = videoId;
-    payload['playbackContext'] = {
-      'contentPlaybackContext': {
-        'html5Preference': 'HTML5_PREF_WANTS',
-        'signatureTimestamp': 19900,
-      }
+    // 1. Try ANDROID_MUSIC
+    var streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'ANDROID_MUSIC',
+      clientVersion: '7.19.52',
+      clientId: '21',
+      userAgent: 'com.google.android.apps.youtube.music/7.19.52 (Linux; U; Android 11)',
+      endpoint: ApiConstants.playerEndpoint,
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 2. Try IOS client fallback
+    streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'IOS',
+      clientVersion: '19.29.1',
+      clientId: '5',
+      userAgent: 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 3. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER
+    streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      clientVersion: '2.0',
+      clientId: '85',
+      userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/11.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.00 Safari/605.1.15',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+      referer: 'https://www.youtube.com/tv',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 4. Try ANDROID_VR
+    streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'ANDROID_VR',
+      clientVersion: '1.60.19',
+      clientId: '28',
+      userAgent: 'Mozilla/5.0 (Linux; Android 10; Quest 2) AppleWebKit/537.36',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 5. Try Piped API Public Mirrors
+    streamInfo = await _fetchPipedStream(videoId);
+    if (streamInfo != null) return streamInfo;
+
+    // 6. Try WEB_REMIX with Cipher Resolver
+    return await _fetchPlayerStream(
+      videoId,
+      clientName: 'WEB_REMIX',
+      clientVersion: '1.20241015.01.00',
+      clientId: '67',
+      userAgent: ApiConstants.defaultUserAgent,
+      endpoint: ApiConstants.playerEndpoint,
+      referer: '${ApiConstants.youtubeMusicBaseUrl}/',
+    );
+  }
+
+  Future<StreamInfo?> _fetchPlayerStream(
+    String videoId, {
+    required String clientName,
+    required String clientVersion,
+    required String clientId,
+    required String userAgent,
+    required String endpoint,
+    String? referer,
+  }) async {
+    final payload = {
+      'context': {
+        'client': {
+          'clientName': clientName,
+          'clientVersion': clientVersion,
+          'hl': 'en',
+          'gl': 'US',
+          if (clientName == 'ANDROID_MUSIC') 'androidSdkVersion': 30,
+          if (clientName == 'IOS') ...{
+            'deviceModel': 'iPhone16,2',
+            'osName': 'iPhone',
+            'osVersion': '17.5.1.21F90',
+          },
+          if (clientName == 'ANDROID_VR') ...{
+            'deviceMake': 'Oculus',
+            'deviceModel': 'Quest 2',
+            'osName': 'Android',
+            'osVersion': '10',
+          },
+        },
+        if (clientName == 'TVHTML5_SIMPLY_EMBEDDED_PLAYER')
+          'thirdParty': {
+            'embedUrl': 'https://www.youtube.com',
+          },
+      },
+      'videoId': videoId,
+      'playbackContext': {
+        'contentPlaybackContext': {
+          'html5Preference': 'HTML5_PREF_WANTS',
+        },
+      },
     };
 
-    try {
-      final response = await _postInnerTube(ApiConstants.playerEndpoint, payload);
+    final customHeaders = <String, String>{
+      'Content-Type': 'application/json',
+      'User-Agent': userAgent,
+      'x-youtube-client-name': clientId,
+      'x-youtube-client-version': clientVersion,
+    };
+    if (referer != null) {
+      customHeaders['Referer'] = referer;
+    }
 
+    try {
+      final response = await _postInnerTube(
+        endpoint,
+        payload,
+        customHeaders: customHeaders,
+      );
       if (response.statusCode != 200) {
-        debugPrint('[InnerTube] Player failed with status: ${response.statusCode}');
+        debugPrint('[InnerTube] $clientName returned status ${response.statusCode}');
         return null;
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final playabilityStatus = data['playabilityStatus'] as Map<String, dynamic>?;
+      if (playabilityStatus != null && playabilityStatus['status'] != 'OK') {
+        debugPrint('[InnerTube] $clientName playabilityStatus: ${playabilityStatus['status']} - ${playabilityStatus['reason']}');
+        return null;
+      }
+
       final streamingData = data['streamingData'] as Map<String, dynamic>?;
       if (streamingData == null) return null;
 
@@ -132,10 +260,26 @@ class InnerTubeApiClient {
         }
       }
 
+      // Check regular combined formats if no adaptive audio formats found
+      if (audioFormats.isEmpty) {
+        final regularFormats = (streamingData['formats'] as List<dynamic>?) ?? [];
+        for (final fmt in regularFormats) {
+          final formatMap = fmt as Map<String, dynamic>;
+          final mimeType = formatMap['mimeType'] as String? ?? '';
+          if (mimeType.contains('audio') || mimeType.contains('mp4')) {
+            audioFormats.add(AudioFormat.fromJson(formatMap));
+          }
+        }
+      }
+
       if (audioFormats.isEmpty) return null;
 
-      // Prefer Opus ~160kbps (itag 251) or M4A (itag 140)
+      // Prefer formats with direct unencrypted URLs first, then Opus (251) or M4A (140)
       audioFormats.sort((a, b) {
+        final aHasUrl = (a.url != null && a.url!.isNotEmpty) ? 1 : 0;
+        final bHasUrl = (b.url != null && b.url!.isNotEmpty) ? 1 : 0;
+        if (aHasUrl != bHasUrl) return bHasUrl.compareTo(aHasUrl);
+
         if (a.itag == 251) return -1;
         if (b.itag == 251) return 1;
         if (a.itag == 140) return -1;
@@ -144,27 +288,77 @@ class InnerTubeApiClient {
       });
 
       final selectedFormat = audioFormats.first;
-      final rawUrl = selectedFormat.url ?? '';
-      final signatureCipher = selectedFormat.signatureCipher;
+      String streamUrl = selectedFormat.url ?? '';
 
-      final resolvedUrl = await _cipherResolver.resolveStreamUrl(
-        rawUrl: rawUrl,
-        signatureCipher: signatureCipher,
-      );
+      // Deobfuscate cipher only if URL is bundled inside signatureCipher
+      if (streamUrl.isEmpty && selectedFormat.signatureCipher != null) {
+        streamUrl = await _cipherResolver.resolveStreamUrl(
+          rawUrl: '',
+          signatureCipher: selectedFormat.signatureCipher,
+        );
+      }
+
+      if (streamUrl.isEmpty) return null;
 
       final expiresInSeconds = int.tryParse(streamingData['expiresInSeconds']?.toString() ?? '21600') ?? 21600;
       final expiresAt = DateTime.now().add(Duration(seconds: expiresInSeconds));
 
+      debugPrint('[InnerTube] Stream resolved successfully using $clientName (itag: ${selectedFormat.itag})');
+
       return StreamInfo(
         videoId: videoId,
-        streamUrl: resolvedUrl,
+        streamUrl: streamUrl,
         format: selectedFormat,
         expiresAt: expiresAt,
       );
     } catch (e) {
-      debugPrint('[InnerTube] getStreamInfo error: $e');
+      debugPrint('[InnerTube] _fetchPlayerStream ($clientName) error: $e');
       return null;
     }
+  }
+
+  /// Piped API public proxy fallback for guaranteed streaming reliability.
+  Future<StreamInfo?> _fetchPipedStream(String videoId) async {
+    final instances = [
+      'https://pipedapi.kavin.rocks',
+      'https://api.piped.private.coffee',
+      'https://piped-api.lunar.icu',
+    ];
+
+    for (final base in instances) {
+      try {
+        final res = await _httpClient.get(
+          Uri.parse('$base/streams/$videoId'),
+          headers: {'Accept': 'application/json'},
+        ).timeout(const Duration(seconds: 4));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final audioStreams = (data['audioStreams'] as List<dynamic>?) ?? [];
+          if (audioStreams.isNotEmpty) {
+            audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
+            final best = audioStreams.first as Map<String, dynamic>;
+            final streamUrl = best['url'] as String? ?? '';
+            if (streamUrl.isNotEmpty) {
+              debugPrint('[InnerTube] Stream resolved via Piped fallback ($base)');
+              return StreamInfo(
+                videoId: videoId,
+                streamUrl: streamUrl,
+                format: AudioFormat(
+                  itag: best['itag'] ?? 140,
+                  mimeType: best['mimeType'] ?? 'audio/mp4',
+                  bitrate: best['bitrate'] ?? 128000,
+                  contentLength: 0,
+                  url: streamUrl,
+                ),
+                expiresAt: DateTime.now().add(const Duration(hours: 4)),
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
   }
 
   /// Get "Up Next" / Endless Radio queue based on the currently playing song.

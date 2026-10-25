@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import '../data/models/song_model.dart';
 import '../data/sources/innertube_api_client.dart';
+import 'download_cache_service.dart';
 
 enum PlaybackStatus { idle, loading, playing, paused, completed, error }
 
@@ -57,6 +59,14 @@ class AudioPlayerService {
         _statusController.add(PlaybackStatus.paused);
       }
     });
+
+    _player.playbackEventStream.listen(
+      (event) {},
+      onError: (Object e, StackTrace st) {
+        debugPrint('[AudioPlayerService] Playback event error: $e');
+        _statusController.add(PlaybackStatus.error);
+      },
+    );
   }
 
   /// Play a song immediately, replacing or prepending the queue.
@@ -117,7 +127,7 @@ class AudioPlayerService {
     }
   }
 
-  Future<void> play() async => await _player.play();
+  Future<void> play() async => _player.play();
   Future<void> pause() async => await _player.pause();
   Future<void> seek(Duration position) async => await _player.seek(position);
 
@@ -130,17 +140,45 @@ class AudioPlayerService {
     _statusController.add(PlaybackStatus.loading);
 
     try {
-      // Resolve direct stream URL using InnerTube & Cipher Resolver
+      // 1. Check if song has a valid local file path (offline mode)
+      if (song.isDownloaded && song.streamUrl != null && song.streamUrl!.isNotEmpty) {
+        final file = File(song.streamUrl!);
+        if (await file.exists()) {
+          debugPrint('[AudioPlayerService] Playing local file: ${song.streamUrl}');
+          await _player.stop();
+          await _player.setFilePath(song.streamUrl!);
+          _player.play();
+          return;
+        }
+      }
+
+      // Check DownloadCacheService if it was downloaded previously
+      final isDownloaded = await DownloadCacheService().isSongDownloaded(song.id);
+      if (isDownloaded) {
+        final list = await DownloadCacheService().getDownloadedSongs();
+        final match = list.firstWhere((s) => s.id == song.id, orElse: () => song);
+        if (match.streamUrl != null && await File(match.streamUrl!).exists()) {
+          debugPrint('[AudioPlayerService] Playing cached file: ${match.streamUrl}');
+          await _player.stop();
+          await _player.setFilePath(match.streamUrl!);
+          _player.play();
+          return;
+        }
+      }
+
+      // 2. Resolve direct stream URL using InnerTube Multi-Client Fallback (ANDROID_MUSIC / IOS / TV / Piped)
       final streamInfo = await _apiClient.getStreamInfo(song.id);
       if (streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
+        debugPrint('[AudioPlayerService] Setting stream URL (${streamInfo.format.mimeType})');
+        await _player.stop();
+        // Do NOT send desktop Referer header - it triggers 403 Forbidden from googlevideo.com CDN
         await _player.setUrl(
           streamInfo.streamUrl,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://music.youtube.com/',
+            'User-Agent': 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
           },
         );
-        await _player.play();
+        _player.play();
       } else {
         _statusController.add(PlaybackStatus.error);
         debugPrint('[AudioPlayerService] Failed to resolve stream for ${song.id}');

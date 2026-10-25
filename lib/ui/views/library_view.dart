@@ -6,6 +6,7 @@ import '../../services/audio_player_service.dart';
 import '../../services/download_cache_service.dart';
 import '../../services/local_playlist_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/now_playing_sheet.dart';
 
 /// Enhanced Library View with Offline Downloads and Custom/Imported Playlists.
 class LibraryView extends StatefulWidget {
@@ -156,6 +157,13 @@ class _LibraryViewState extends State<LibraryView> with SingleTickerProviderStat
             ),
             onTap: () {
               _audioService.playPlaylist(_downloadedSongs, initialIndex: index);
+              showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                useSafeArea: true,
+                backgroundColor: Colors.transparent,
+                builder: (ctx) => NowPlayingSheet(song: song),
+              );
             },
           ),
         );
@@ -228,6 +236,13 @@ class _LibraryViewState extends State<LibraryView> with SingleTickerProviderStat
               onPressed: () {
                 if (playlist.songs.isNotEmpty) {
                   _audioService.playPlaylist(playlist.songs);
+                  showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    useSafeArea: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (ctx) => NowPlayingSheet(song: playlist.songs[0]),
+                  );
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('เพลย์ลิสต์นี้ยังไม่มีเพลง')),

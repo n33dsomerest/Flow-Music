@@ -45,12 +45,11 @@ class DownloadCacheService {
       final filePath = '${audioDir.path}/${song.id}.$ext';
       final file = File(filePath);
 
-      // Download audio binary stream
+      // Download audio binary stream (do NOT send Referer to googlevideo.com)
       final response = await http.get(
         Uri.parse(streamInfo.streamUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://music.youtube.com/',
+          'User-Agent': 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
         },
       );
 

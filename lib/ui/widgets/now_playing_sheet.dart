@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
@@ -26,6 +27,9 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
   final LyricsClient _lyricsClient = LyricsClient();
   final DownloadCacheService _downloadService = DownloadCacheService();
 
+  late SongModel _currentSong;
+  StreamSubscription<SongModel?>? _songSubscription;
+
   late TabController _tabController;
   LyricsModel? _lyrics;
   bool _isLoadingLyrics = true;
@@ -35,19 +39,30 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
   @override
   void initState() {
     super.initState();
+    _currentSong = widget.song;
     _tabController = TabController(length: 2, vsync: this);
     _loadLyrics();
     _checkDownloadStatus();
+
+    _songSubscription = _audioService.currentSongStream.listen((song) {
+      if (song != null && song.id != _currentSong.id && mounted) {
+        setState(() {
+          _currentSong = song;
+        });
+        _loadLyrics();
+        _checkDownloadStatus();
+      }
+    });
   }
 
   Future<void> _checkDownloadStatus() async {
-    final downloaded = await _downloadService.isSongDownloaded(widget.song.id);
+    final downloaded = await _downloadService.isSongDownloaded(_currentSong.id);
     if (mounted) setState(() => _isDownloaded = downloaded);
   }
 
   Future<void> _loadLyrics() async {
     setState(() => _isLoadingLyrics = true);
-    final lyrics = await _lyricsClient.getLyrics(widget.song);
+    final lyrics = await _lyricsClient.getLyrics(_currentSong);
     if (mounted) {
       setState(() {
         _lyrics = lyrics;
@@ -58,6 +73,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
 
   @override
   void dispose() {
+    _songSubscription?.cancel();
     _tabController.dispose();
     _lyricsScrollController.dispose();
     super.dispose();
@@ -72,7 +88,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
           // Dynamic Blurred Background from Album Cover
           Positioned.fill(
             child: CachedNetworkImage(
-              imageUrl: widget.song.thumbnailUrl,
+              imageUrl: _currentSong.thumbnailUrl,
               fit: BoxFit.cover,
               errorWidget: (_, __, ___) => Container(color: AppTheme.background),
             ),
@@ -141,7 +157,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(content: Text('กำลังดาวน์โหลดเพลงไว้ฟังออฟไลน์...')),
                                 );
-                                final ok = await _downloadService.downloadSong(widget.song);
+                                final ok = await _downloadService.downloadSong(_currentSong);
                                 if (mounted) {
                                   setState(() => _isDownloaded = ok);
                                   if (ok) {
@@ -200,7 +216,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
             child: ClipRRect(
               borderRadius: BorderRadius.circular(24),
               child: CachedNetworkImage(
-                imageUrl: widget.song.thumbnailUrl,
+                imageUrl: _currentSong.thumbnailUrl,
                 fit: BoxFit.cover,
               ),
             ),
@@ -283,7 +299,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
         children: [
           // Title & Artist
           Text(
-            widget.song.title,
+            _currentSong.title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
@@ -294,7 +310,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
           ),
           const SizedBox(height: 4),
           Text(
-            widget.song.artist,
+            _currentSong.artist,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 16, color: Colors.white70),
@@ -309,7 +325,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
               return StreamBuilder<Duration?>(
                 stream: _audioService.durationStream,
                 builder: (context, durSnap) {
-                  final duration = durSnap.data ?? Duration(seconds: widget.song.durationSeconds);
+                  final duration = durSnap.data ?? Duration(seconds: _currentSong.durationSeconds);
                   final maxSec = duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
                   final currentSec = position.inSeconds.toDouble().clamp(0.0, maxSec);
 

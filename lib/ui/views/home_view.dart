@@ -5,6 +5,7 @@ import '../../data/models/song_model.dart';
 import '../../data/sources/innertube_api_client.dart';
 import '../../services/audio_player_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/now_playing_sheet.dart';
 
 /// Dynamic Home view with mood chips, trending charts, and recommendations.
 class HomeView extends StatefulWidget {
@@ -188,6 +189,13 @@ class _HomeViewState extends State<HomeView> {
                           label: const Text('เล่นทั้งหมด', style: TextStyle(color: AppTheme.secondary)),
                           onPressed: () {
                             _audioService.playPlaylist(_songs);
+                            showModalBottomSheet(
+                              context: context,
+                              isScrollControlled: true,
+                              useSafeArea: true,
+                              backgroundColor: Colors.transparent,
+                              builder: (ctx) => NowPlayingSheet(song: _songs[0]),
+                            );
                           },
                         ),
                     ],
@@ -262,6 +270,13 @@ class _HomeViewState extends State<HomeView> {
                             trailing: const Icon(CupertinoIcons.play_circle_fill, color: AppTheme.primary, size: 32),
                             onTap: () {
                               _audioService.playPlaylist(_songs, initialIndex: index);
+                              showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                useSafeArea: true,
+                                backgroundColor: Colors.transparent,
+                                builder: (ctx) => NowPlayingSheet(song: song),
+                              );
                             },
                           ),
                         );

@@ -39,35 +39,42 @@ class CipherResolver {
     required String rawUrl,
     String? signatureCipher,
   }) async {
-    await init();
-    String targetUrl = rawUrl;
+    try {
+      await init();
+      String targetUrl = rawUrl;
 
-    // 1. Resolve Signature Cipher if URL is bundled inside signatureCipher
-    if (signatureCipher != null && signatureCipher.isNotEmpty) {
-      final cipherParams = Uri.splitQueryString(signatureCipher);
-      final rawStreamUrl = cipherParams['url'];
-      final signature = cipherParams['s'];
-      final sp = cipherParams['sp'] ?? 'sig';
+      // 1. Resolve Signature Cipher if URL is bundled inside signatureCipher
+      if (signatureCipher != null && signatureCipher.isNotEmpty) {
+        final cipherParams = Uri.splitQueryString(signatureCipher);
+        final rawStreamUrl = cipherParams['url'];
+        final signature = cipherParams['s'];
+        final sp = cipherParams['sp'] ?? 'sig';
 
-      if (rawStreamUrl != null && signature != null) {
-        final decryptedSig = await _deobfuscateSignature(signature);
-        targetUrl = '$rawStreamUrl&$sp=${Uri.encodeComponent(decryptedSig)}';
+        if (rawStreamUrl != null && signature != null) {
+          final decryptedSig = await _deobfuscateSignature(signature);
+          targetUrl = '$rawStreamUrl&$sp=${Uri.encodeComponent(decryptedSig)}';
+        }
       }
-    }
 
-    // 2. Resolve n-parameter throttling
-    final uri = Uri.parse(targetUrl);
-    final nParam = uri.queryParameters['n'];
-    if (nParam != null && nParam.isNotEmpty) {
-      final resolvedN = await _deobfuscateNParam(nParam);
-      if (resolvedN != null && resolvedN.isNotEmpty && resolvedN != nParam) {
-        final queryParams = Map<String, String>.from(uri.queryParameters);
-        queryParams['n'] = resolvedN;
-        targetUrl = uri.replace(queryParameters: queryParams).toString();
+      // 2. Resolve n-parameter throttling
+      if (targetUrl.isNotEmpty) {
+        final uri = Uri.parse(targetUrl);
+        final nParam = uri.queryParameters['n'];
+        if (nParam != null && nParam.isNotEmpty) {
+          final resolvedN = await _deobfuscateNParam(nParam);
+          if (resolvedN != null && resolvedN.isNotEmpty && resolvedN != nParam) {
+            final queryParams = Map<String, String>.from(uri.queryParameters);
+            queryParams['n'] = resolvedN;
+            targetUrl = uri.replace(queryParameters: queryParams).toString();
+          }
+        }
       }
-    }
 
-    return targetUrl;
+      return targetUrl;
+    } catch (e) {
+      debugPrint('[CipherResolver] resolveStreamUrl error: $e');
+      return rawUrl;
+    }
   }
 
   /// Ensure latest YouTube player.js is fetched and loaded into JS runtime.

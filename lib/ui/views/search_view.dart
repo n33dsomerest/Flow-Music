@@ -8,6 +8,7 @@ import '../../services/audio_player_service.dart';
 import '../../services/download_cache_service.dart';
 import '../../services/local_playlist_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/now_playing_sheet.dart';
 
 /// Instant YouTube Music Search View with song action sheets.
 class SearchView extends StatefulWidget {
@@ -156,6 +157,13 @@ class _SearchViewState extends State<SearchView> {
                                 ),
                                 onTap: () {
                                   _audioService.playPlaylist(_searchResults, initialIndex: index);
+                                  showModalBottomSheet(
+                                    context: context,
+                                    isScrollControlled: true,
+                                    useSafeArea: true,
+                                    backgroundColor: Colors.transparent,
+                                    builder: (ctx) => NowPlayingSheet(song: song),
+                                  );
                                 },
                               ),
                             );
@@ -192,6 +200,13 @@ class _SearchViewState extends State<SearchView> {
               onTap: () {
                 Navigator.pop(ctx);
                 _audioService.playSong(song);
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  useSafeArea: true,
+                  backgroundColor: Colors.transparent,
+                  builder: (c) => NowPlayingSheet(song: song),
+                );
               },
             ),
             ListTile(
