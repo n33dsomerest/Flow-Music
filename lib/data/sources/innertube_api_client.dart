@@ -157,9 +157,11 @@ class InnerTubeApiClient {
           final id = renderer['videoId'] as String? ?? '';
           final title = renderer['title']?['runs']?[0]?['text'] as String? ?? 'Unknown Title';
           final artist = renderer['longBylineText']?['runs']?[0]?['text'] as String? ?? 'Unknown Artist';
-          final album = renderer['longBylineText']?['runs']?.length > 2
-              ? renderer['longBylineText']?['runs']?[2]?['text'] as String?
-              : null;
+          String? album;
+          final bylineRuns = renderer['longBylineText']?['runs'] as List<dynamic>?;
+          if (bylineRuns != null && bylineRuns.length > 2) {
+            album = bylineRuns[2]['text'] as String?;
+          }
           final durationStr = renderer['lengthText']?['runs']?[0]?['text'] as String? ?? '0:00';
           final thumbnails = renderer['thumbnail']?['thumbnails'] as List<dynamic>?;
           final thumbUrl = (thumbnails != null && thumbnails.isNotEmpty)

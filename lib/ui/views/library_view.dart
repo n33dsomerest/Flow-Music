@@ -135,7 +135,7 @@ class _LibraryViewState extends State<LibraryView> with SingleTickerProviderStat
             ),
             subtitle: Row(
               children: [
-                const Icon(CupertinoIcons.check_mark_circled_fill, color: AppTheme.secondary, size: 14),
+                const Icon(CupertinoIcons.checkmark_circle_fill, color: AppTheme.secondary, size: 14),
                 const SizedBox(width: 4),
                 Expanded(
                   child: Text(
