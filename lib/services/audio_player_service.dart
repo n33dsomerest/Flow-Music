@@ -6,6 +6,7 @@ import 'package:audio_session/audio_session.dart';
 import '../data/models/song_model.dart';
 import '../data/sources/innertube_api_client.dart';
 import 'download_cache_service.dart';
+import 'playback_history_service.dart';
 
 enum PlaybackStatus { idle, loading, playing, paused, completed, error }
 
@@ -145,6 +146,9 @@ class AudioPlayerService {
 
     _songController.add(song);
     _statusController.add(PlaybackStatus.loading);
+
+    // Record play count and playback history
+    PlaybackHistoryService().recordPlay(song);
 
     try {
       // 1. Check if song has a valid local file path (offline mode)

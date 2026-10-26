@@ -111,14 +111,12 @@ class DownloadCacheService {
       final musicDir = await _getDownloadDirectory();
 
       // Determine extension based on mimeType
-      String ext = 'm4a';
+      String ext = 'mp3';
       final mime = streamInfo.format.mimeType.toLowerCase();
       if (mime.contains('audio/mp4') || mime.contains('m4a')) {
         ext = 'm4a';
-      } else if (mime.contains('audio/mpeg') || mime.contains('mp3')) {
+      } else {
         ext = 'mp3';
-      } else if (mime.contains('opus') || mime.contains('webm')) {
-        ext = 'opus';
       }
 
       // Safe clean filename: "Artist - Title.ext"

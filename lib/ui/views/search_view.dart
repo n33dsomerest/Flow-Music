@@ -206,7 +206,7 @@ class _SearchViewState extends State<SearchView> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  'ค้นหาเพลงโปรดจาก YouTube Music',
+                  'ค้นหาเพลงโปรดจากศิลปินที่คุณชื่นชอบ',
                   style: TextStyle(color: Colors.white60, fontSize: 14),
                 ),
               ],

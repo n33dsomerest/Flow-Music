@@ -4,8 +4,9 @@ import 'package:http/http.dart' as http;
 import '../../core/constants/api_constants.dart';
 import '../models/lyrics_model.dart';
 import '../models/song_model.dart';
+import 'innertube_api_client.dart';
 
-/// Client for fetching synchronized and plain lyrics via LRCLIB and YouTube Music.
+/// Client for fetching synchronized and plain lyrics via Meting and LRCLIB.
 class LyricsClient {
   final http.Client _httpClient;
 
@@ -13,7 +14,19 @@ class LyricsClient {
 
   /// Fetch synchronized lyrics for a given song.
   Future<LyricsModel?> getLyrics(SongModel song) async {
-    // 1. Try LRCLIB exact match
+    // 0. Try Meting LRC lyrics first
+    try {
+      final lrc = await InnerTubeApiClient().getLrcLyrics(song.id);
+      if (lrc != null && lrc.isNotEmpty) {
+        return LyricsModel.fromLrc(
+          title: song.title,
+          artist: song.artist,
+          lrcContent: lrc,
+        );
+      }
+    } catch (_) {}
+
+    // 1. Fallback to LRCLIB exact match
     final queryParams = <String, String>{
       'track_name': _cleanTitle(song.title),
       'artist_name': song.artist,
