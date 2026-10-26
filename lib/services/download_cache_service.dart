@@ -134,13 +134,16 @@ class DownloadCacheService {
       debugPrint('[DownloadCacheService] Downloading to $filePath');
 
       final client = http.Client();
-      final request = http.Request('GET', Uri.parse(streamInfo.streamUrl));
+      final request = http.Request('GET', Uri.parse(streamInfo.streamUrl))
+        ..followRedirects = true
+        ..maxRedirects = 5;
+
       if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
         request.headers['User-Agent'] = streamInfo.userAgent!;
       }
 
-      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 45));
-      if (streamedResponse.statusCode == 200) {
+      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 60));
+      if (streamedResponse.statusCode >= 200 && streamedResponse.statusCode < 300) {
         final totalBytes = streamedResponse.contentLength ?? streamInfo.format.contentLength ?? 0;
         int receivedBytes = 0;
         final sink = file.openWrite();
@@ -148,12 +151,12 @@ class DownloadCacheService {
         await for (final chunk in streamedResponse.stream) {
           sink.add(chunk);
           receivedBytes += chunk.length;
-          if (totalBytes > 0) {
-            final progress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
-            _activeDownloads[song.id] = progress;
-            _downloadProgressController.add(Map.from(_activeDownloads));
-            onProgress?.call(progress);
-          }
+          final progress = totalBytes > 0
+              ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
+              : (receivedBytes / (4 * 1024 * 1024)).clamp(0.05, 0.95);
+          _activeDownloads[song.id] = progress;
+          _downloadProgressController.add(Map.from(_activeDownloads));
+          onProgress?.call(progress);
         }
 
         await sink.flush();

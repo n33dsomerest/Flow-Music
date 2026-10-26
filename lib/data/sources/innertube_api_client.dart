@@ -14,6 +14,13 @@ class InnerTubeApiClient {
   final http.Client _httpClient;
   final CipherResolver _cipherResolver;
 
+  // In-memory stream cache to avoid repeated queries and rate limits
+  static final Map<String, StreamInfo> _streamCache = {};
+
+  static void clearCache(String videoId) {
+    _streamCache.remove(videoId);
+  }
+
   String? _apiKey;
   String? _visitorData;
   DateTime? _configFetchedAt;
@@ -84,7 +91,7 @@ class InnerTubeApiClient {
     );
   }
 
-  /// Search for songs, albums, and playlists on YouTube Music.
+  /// Search for songs, albums, and playlists on YouTube Music with Piped fallback.
   Future<List<SongModel>> search(String query, {String? filter}) async {
     final payload = ApiConstants.defaultClientContext();
     payload['query'] = query;
@@ -95,32 +102,101 @@ class InnerTubeApiClient {
     try {
       final response = await _postInnerTube(ApiConstants.searchEndpoint, payload);
 
-      if (response.statusCode != 200) {
-        debugPrint('[InnerTube] Search failed with status: ${response.statusCode}');
-        return [];
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final results = _extractSongsFromTree(data);
+        if (results.isNotEmpty) return results;
       }
-
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return _extractSongsFromTree(data);
     } catch (e) {
-      debugPrint('[InnerTube] Search error: $e');
-      return [];
+      debugPrint('[InnerTube] InnerTube search error: $e');
     }
+
+    // Fallback: search via Piped API
+    return await _searchPiped(query);
   }
 
-  /// Get direct audio stream URL with Multi-Tier Fallback:
-  /// 1. ANDROID_VR InnerTube client (Oculus Quest 2: no BotGuard/PO-Token, direct clean URLs)
-  /// 2. ANDROID_TESTSUITE InnerTube client (bypasses BotGuard / login requirements)
-  /// 3. IOS InnerTube client (direct unencrypted AAC M4A)
-  /// 4. TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
-  /// 5. WEB_EMBEDDED_PLAYER InnerTube client
-  /// 6. Invidious API instances (proxied to prevent 403 Forbidden)
-  /// 7. Piped API instances
+  /// Piped fallback search
+  Future<List<SongModel>> _searchPiped(String query) async {
+    final instances = [
+      'https://pipedapi.adminforge.de',
+      'https://pipedapi.kavin.rocks',
+      'https://api.piped.private.coffee',
+    ];
+
+    for (final base in instances) {
+      try {
+        final url = Uri.parse('$base/search?q=${Uri.encodeComponent(query)}&filter=music_songs');
+        final res = await _httpClient.get(url).timeout(const Duration(milliseconds: 3000));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final items = (data['items'] as List<dynamic>?) ?? [];
+          final songs = <SongModel>[];
+
+          for (final item in items) {
+            final m = item as Map<String, dynamic>;
+            final videoUrl = m['url'] as String? ?? '';
+            final videoId = videoUrl.contains('v=')
+                ? videoUrl.split('v=')[1].split('&')[0]
+                : videoUrl.replaceFirst('/watch?v=', '');
+            if (videoId.isNotEmpty) {
+              songs.add(SongModel(
+                id: videoId,
+                title: m['title'] as String? ?? 'Unknown',
+                artist: m['uploaderName'] as String? ?? 'Unknown Artist',
+                durationSeconds: (m['duration'] as num?)?.toInt() ?? 0,
+                thumbnailUrl: m['thumbnail'] as String? ?? '',
+              ));
+            }
+          }
+          if (songs.isNotEmpty) {
+            debugPrint('[InnerTube] Search results retrieved via Piped fallback ($base)');
+            return songs;
+          }
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
+  /// Get direct audio stream URL with Multi-Tier Hybrid Fallback:
+  /// 0. In-memory cache check (zero latency)
+  /// 1. Piped API instances with Fast Failover (M4A/AAC preferred, no BotGuard)
+  /// 2. Cobalt Multi-Instance API (direct M4A/MP3 tunnel)
+  /// 3. Invidious API instances (proxied to prevent IP-bound 403 Forbidden)
+  /// 4. Direct InnerTube client (ANDROID_VR / WEB_EMBEDDED)
   Future<StreamInfo?> getStreamInfo(String videoId) async {
     if (videoId.isEmpty) return null;
 
-    // 1. Try ANDROID_VR (Oculus Quest 2: zero botguard blocks, pristine direct audio streams)
-    var streamInfo = await _fetchPlayerStream(
+    // 0. Check in-memory stream cache
+    final cached = _streamCache[videoId];
+    if (cached != null && DateTime.now().isBefore(cached.expiresAt.subtract(const Duration(minutes: 10)))) {
+      debugPrint('[InnerTube] Returning in-memory cached stream for $videoId');
+      return cached;
+    }
+
+    // 1. Tier 1: Piped API with Fast Failover (M4A/AAC preferred)
+    var streamInfo = await _fetchPipedStream(videoId);
+    if (streamInfo != null) {
+      _streamCache[videoId] = streamInfo;
+      return streamInfo;
+    }
+
+    // 2. Tier 2: Cobalt Multi-Instance API (High-quality direct audio tunnel)
+    streamInfo = await _fetchCobaltStream(videoId);
+    if (streamInfo != null) {
+      _streamCache[videoId] = streamInfo;
+      return streamInfo;
+    }
+
+    // 3. Tier 3: Invidious Public Instances (Proxied to bypass IP restrictions)
+    streamInfo = await _fetchInvidiousStream(videoId);
+    if (streamInfo != null) {
+      _streamCache[videoId] = streamInfo;
+      return streamInfo;
+    }
+
+    // 4. Tier 4: Direct InnerTube Embedded & Android clients as last resort
+    streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'ANDROID_VR',
       clientVersion: '1.60.19',
@@ -128,69 +204,141 @@ class InnerTubeApiClient {
       userAgent: 'Mozilla/5.0 (Linux; Android 10; Quest 2) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/15.0.0.0 Safari/537.36',
       endpoint: 'https://www.youtube.com/youtubei/v1/player',
     );
-    if (streamInfo != null) return streamInfo;
+    if (streamInfo != null) {
+      _streamCache[videoId] = streamInfo;
+      return streamInfo;
+    }
 
-    // 2. Try ANDROID_TESTSUITE InnerTube client
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'ANDROID_TESTSUITE',
-      clientVersion: '1.9',
-      clientId: '95',
-      userAgent: 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-    );
-    if (streamInfo != null) return streamInfo;
+    return null;
+  }
 
-    // 3. Try IOS InnerTube client
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'IOS',
-      clientVersion: '19.29.1',
-      clientId: '5',
-      userAgent: 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-    );
-    if (streamInfo != null) return streamInfo;
+  /// Piped API public instance resolver with active failover list.
+  Future<StreamInfo?> _fetchPipedStream(String videoId) async {
+    final instances = [
+      'https://pipedapi.adminforge.de',
+      'https://pipedapi.kavin.rocks',
+      'https://api.piped.private.coffee',
+      'https://pipedapi.drgns.space',
+      'https://pipedapi.leptons.xyz',
+      'https://pipedapi.owo.si',
+      'https://pipedapi.smnz.de',
+    ];
 
-    // 4. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-      clientVersion: '2.0',
-      clientId: '85',
-      userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/11.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.00 Safari/605.1.15',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-      referer: 'https://www.youtube.com/tv',
-    );
-    if (streamInfo != null) return streamInfo;
+    for (final base in instances) {
+      try {
+        final res = await _httpClient.get(
+          Uri.parse('$base/streams/$videoId'),
+          headers: {'Accept': 'application/json'},
+        ).timeout(const Duration(milliseconds: 2500));
 
-    // 5. Try WEB_EMBEDDED_PLAYER InnerTube client
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'WEB_EMBEDDED_PLAYER',
-      clientVersion: '1.20241015.01.00',
-      clientId: '56',
-      userAgent: ApiConstants.defaultUserAgent,
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-      referer: 'https://www.youtube.com/',
-    );
-    if (streamInfo != null) return streamInfo;
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final audioStreams = (data['audioStreams'] as List<dynamic>?) ?? [];
+          if (audioStreams.isNotEmpty) {
+            // Sort: 1. M4A/AAC first, 2. Highest Bitrate, 3. Opus
+            audioStreams.sort((a, b) {
+              final aMap = a as Map<String, dynamic>;
+              final bMap = b as Map<String, dynamic>;
+              final aFmt = (aMap['format'] ?? aMap['mimeType'] ?? '').toString().toUpperCase();
+              final bFmt = (bMap['format'] ?? bMap['mimeType'] ?? '').toString().toUpperCase();
+              final aIsM4a = aFmt.contains('M4A') || aFmt.contains('MP4');
+              final bIsM4a = bFmt.contains('M4A') || bFmt.contains('MP4');
 
-    // 6. Try Invidious API instances (proxied to prevent IP-bound 403 Forbidden)
-    streamInfo = await _fetchInvidiousStream(videoId);
-    if (streamInfo != null) return streamInfo;
+              if (aIsM4a && !bIsM4a) return -1;
+              if (!aIsM4a && bIsM4a) return 1;
 
-    // 7. Try Piped API instances
-    return await _fetchPipedStream(videoId);
+              final aBitrate = (aMap['bitrate'] as num?)?.toInt() ?? 0;
+              final bBitrate = (bMap['bitrate'] as num?)?.toInt() ?? 0;
+              return bBitrate.compareTo(aBitrate);
+            });
+
+            final best = audioStreams.first as Map<String, dynamic>;
+            final streamUrl = best['url'] as String? ?? '';
+            if (streamUrl.isNotEmpty) {
+              final mimeType = (best['mimeType'] as String?) ?? 'audio/mp4';
+              final bitrate = (best['bitrate'] as num?)?.toInt() ?? 128000;
+              final contentLength = int.tryParse(best['contentLength']?.toString() ?? '0') ?? 0;
+              debugPrint('[InnerTube] Stream resolved via Piped ($base) [$mimeType]');
+              return StreamInfo(
+                videoId: videoId,
+                streamUrl: streamUrl,
+                format: AudioFormat(
+                  itag: (best['itag'] as num?)?.toInt() ?? 140,
+                  mimeType: mimeType,
+                  bitrate: bitrate,
+                  contentLength: contentLength,
+                  url: streamUrl,
+                ),
+                expiresAt: DateTime.now().add(const Duration(hours: 4)),
+              );
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[InnerTube] Piped ($base) error: $e');
+      }
+    }
+    return null;
+  }
+
+  /// Cobalt API resolver for direct audio streams.
+  Future<StreamInfo?> _fetchCobaltStream(String videoId) async {
+    final instances = [
+      'https://api.cobalt.tools',
+      'https://cobalt.kwiatekm.pl/api/json',
+      'https://cobalt-api.kellr.club/api/json',
+      'https://dl.khann.me/api/json',
+    ];
+
+    for (final base in instances) {
+      try {
+        final endpoint = base.endsWith('/api/json') ? base : '$base/api/json';
+        final res = await _httpClient.post(
+          Uri.parse(endpoint),
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'url': 'https://www.youtube.com/watch?v=$videoId',
+            'downloadMode': 'audio',
+            'audioFormat': 'm4a',
+          }),
+        ).timeout(const Duration(milliseconds: 3000));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final streamUrl = (data['url'] ?? data['stream'] ?? data['tunnel']) as String? ?? '';
+          if (streamUrl.isNotEmpty) {
+            debugPrint('[InnerTube] Stream resolved via Cobalt ($base)');
+            return StreamInfo(
+              videoId: videoId,
+              streamUrl: streamUrl,
+              format: AudioFormat(
+                itag: 140,
+                mimeType: 'audio/mp4',
+                bitrate: 192000,
+                contentLength: 0,
+                url: streamUrl,
+              ),
+              expiresAt: DateTime.now().add(const Duration(hours: 4)),
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('[InnerTube] Cobalt ($base) error: $e');
+      }
+    }
+    return null;
   }
 
   /// Invidious API public instance resolver (proxied to prevent 403 Forbidden).
   Future<StreamInfo?> _fetchInvidiousStream(String videoId) async {
     final instances = [
-      'https://inv.tux.pizza',
       'https://invidious.nerdvpn.de',
       'https://invidious.jing.rocks',
       'https://iv.ggtyler.dev',
+      'https://inv.tux.pizza',
       'https://invidious.drgns.space',
       'https://yewtu.be',
     ];
@@ -200,7 +348,7 @@ class InnerTubeApiClient {
         final res = await _httpClient.get(
           Uri.parse('$base/api/v1/videos/$videoId'),
           headers: {'Accept': 'application/json'},
-        ).timeout(const Duration(milliseconds: 3000));
+        ).timeout(const Duration(milliseconds: 2500));
 
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -251,98 +399,6 @@ class InnerTubeApiClient {
                 expiresAt: DateTime.now().add(const Duration(hours: 4)),
               );
             }
-          }
-        }
-      } catch (_) {}
-    }
-    return null;
-  }
-
-  /// Piped API public instance resolver.
-  Future<StreamInfo?> _fetchPipedStream(String videoId) async {
-    final instances = [
-      'https://pipedapi.tokhmi.xyz',
-      'https://piped-api.garudalinux.org',
-      'https://pipedapi.adminforge.de',
-      'https://api.piped.privacydev.net',
-      'https://pipedapi.drgns.space',
-    ];
-
-    for (final base in instances) {
-      try {
-        final res = await _httpClient.get(
-          Uri.parse('$base/streams/$videoId'),
-          headers: {'Accept': 'application/json'},
-        ).timeout(const Duration(milliseconds: 3500));
-
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          final audioStreams = (data['audioStreams'] as List<dynamic>?) ?? [];
-          if (audioStreams.isNotEmpty) {
-            audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
-            final best = audioStreams.first as Map<String, dynamic>;
-            final streamUrl = best['url'] as String? ?? '';
-            if (streamUrl.isNotEmpty) {
-              debugPrint('[InnerTube] Stream resolved via Piped ($base)');
-              return StreamInfo(
-                videoId: videoId,
-                streamUrl: streamUrl,
-                format: AudioFormat(
-                  itag: best['itag'] ?? 140,
-                  mimeType: best['mimeType'] ?? 'audio/mp4',
-                  bitrate: best['bitrate'] ?? 128000,
-                  contentLength: best['contentLength'] ?? 0,
-                  url: streamUrl,
-                ),
-                expiresAt: DateTime.now().add(const Duration(hours: 4)),
-              );
-            }
-          }
-        }
-      } catch (_) {}
-    }
-    return null;
-  }
-
-  /// Cobalt API resolver for direct audio streams.
-  Future<StreamInfo?> _fetchCobaltStream(String videoId) async {
-    final instances = [
-      'https://api.cobalt.tools/api/json',
-      'https://cobalt.kwiatekm.pl/api/json',
-    ];
-
-    for (final endpoint in instances) {
-      try {
-        final res = await _httpClient.post(
-          Uri.parse(endpoint),
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            'url': 'https://youtu.be/$videoId',
-            'downloadMode': 'audio',
-            'audioFormat': 'mp3',
-          }),
-        ).timeout(const Duration(milliseconds: 3500));
-
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          final streamUrl = data['url'] as String? ?? '';
-          if (streamUrl.isNotEmpty) {
-            debugPrint('[InnerTube] Stream resolved via Cobalt ($endpoint)');
-            return StreamInfo(
-              videoId: videoId,
-              streamUrl: streamUrl,
-              format: AudioFormat(
-                itag: 140,
-                mimeType: 'audio/mp3',
-                bitrate: 128000,
-                contentLength: 0,
-                url: streamUrl,
-              ),
-              expiresAt: DateTime.now().add(const Duration(hours: 4)),
-            );
           }
         }
       } catch (_) {}

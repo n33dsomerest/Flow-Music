@@ -188,11 +188,13 @@ class AudioPlayerService {
         );
         _player.play();
       } else {
+        InnerTubeApiClient.clearCache(song.id);
         _statusController.add(PlaybackStatus.error);
         debugPrint('[AudioPlayerService] Failed to resolve stream for ${song.id}');
       }
     } catch (e) {
       debugPrint('[AudioPlayerService] Playback error: $e');
+      InnerTubeApiClient.clearCache(song.id);
       _statusController.add(PlaybackStatus.error);
     }
   }
