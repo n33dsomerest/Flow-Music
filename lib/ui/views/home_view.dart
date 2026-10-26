@@ -65,7 +65,10 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _loadRecommendationsAndHistory() async {
     final mostPlayed = await _historyService.getMostPlayedSongs(limit: 10);
-    final recommended = await _historyService.getRecommendedSongs(limit: 10);
+    var recommended = await _historyService.getRecommendedSongs(limit: 10);
+    if (recommended.isEmpty) {
+      recommended = await _apiClient.search('Top Hits Thailand');
+    }
 
     if (mounted) {
       setState(() {
@@ -84,7 +87,10 @@ class _HomeViewState extends State<HomeView> {
     }
 
     final query = mood == 'Top Charts' ? 'Top Hits Thailand' : '$mood music';
-    final songs = await _apiClient.search(query);
+    var songs = await _apiClient.search(query);
+    if (songs.isEmpty) {
+      songs = await _apiClient.search('เพลงไทยฮิต');
+    }
 
     if (mounted) {
       setState(() {
@@ -568,7 +574,46 @@ class _HomeViewState extends State<HomeView> {
                       ),
                     ),
                   ),
-                ],
+                ] else
+                  SliverToBoxAdapter(
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                      padding: const EdgeInsets.all(24),
+                      decoration: AppTheme.glassDecoration(
+                        borderRadius: 20,
+                        color: AppTheme.surfaceLight.withOpacity(0.5),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(CupertinoIcons.music_note_list, size: 40, color: AppTheme.primaryLight.withOpacity(0.8)),
+                          const SizedBox(height: 12),
+                          Text(
+                            'กำลังโหลดเพลง $_selectedMood...',
+                            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'หากใช้เวลานานเกินไป กรุณากดปุ่มเพื่อลองใหม่อีกครั้ง',
+                            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 14),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primary,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                            ),
+                            icon: const Icon(CupertinoIcons.arrow_clockwise, size: 16),
+                            label: const Text('ลองใหม่อีกครั้ง', style: TextStyle(fontWeight: FontWeight.bold)),
+                            onPressed: () => _loadMoodContent(_selectedMood),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
 
               // Safe Space for Floating MiniPlayer and Frosted Bottom Bar

@@ -124,10 +124,13 @@ class PlaybackHistoryService {
 
       // Default recommendations: trending Thai songs
       final defaults = await _apiClient.search('เพลงรักฮิตโดนใจ');
-      return defaults.take(limit).toList();
+      if (defaults.isNotEmpty) {
+        return defaults.take(limit).toList();
+      }
+      return (await _apiClient.search('Top Hits Thailand')).take(limit).toList();
     } catch (e) {
       debugPrint('[PlaybackHistory] Error getting recommendations: $e');
-      return [];
+      return await _apiClient.search('Top Hits Thailand');
     }
   }
 }

@@ -199,6 +199,17 @@ class AudioPlayerService {
     } catch (e) {
       debugPrint('[AudioPlayerService] Playback error: $e');
       InnerTubeApiClient.clearCache(song.id);
+      try {
+        final retryStream = await _apiClient.getStreamInfo(song.id);
+        if (retryStream != null && retryStream.streamUrl.isNotEmpty) {
+          await _player.stop();
+          await _player.setUrl(retryStream.streamUrl);
+          _player.play();
+          return;
+        }
+      } catch (retryError) {
+        debugPrint('[AudioPlayerService] Retry playback error: $retryError');
+      }
       _statusController.add(PlaybackStatus.error);
     }
   }

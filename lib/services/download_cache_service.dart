@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../data/models/song_model.dart';
 import '../data/sources/innertube_api_client.dart';
 
@@ -131,35 +132,84 @@ class DownloadCacheService {
 
       debugPrint('[DownloadCacheService] Downloading to $filePath');
 
-      final client = http.Client();
-      final request = http.Request('GET', Uri.parse(streamInfo.streamUrl))
-        ..followRedirects = true
-        ..maxRedirects = 5;
+      bool downloadSuccess = false;
 
-      if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
-        request.headers['User-Agent'] = streamInfo.userAgent!;
-      }
+      // Primary Attempt: Direct HTTP streaming download
+      try {
+        final client = http.Client();
+        final request = http.Request('GET', Uri.parse(streamInfo.streamUrl))
+          ..followRedirects = true
+          ..maxRedirects = 5;
 
-      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 60));
-      if (streamedResponse.statusCode >= 200 && streamedResponse.statusCode < 300) {
-        final totalBytes = streamedResponse.contentLength ?? streamInfo.format.contentLength ?? 0;
-        int receivedBytes = 0;
-        final sink = file.openWrite();
-
-        await for (final chunk in streamedResponse.stream) {
-          sink.add(chunk);
-          receivedBytes += chunk.length;
-          final progress = totalBytes > 0
-              ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
-              : (receivedBytes / (4 * 1024 * 1024)).clamp(0.05, 0.95);
-          _activeDownloads[song.id] = progress;
-          _downloadProgressController.add(Map.from(_activeDownloads));
-          onProgress?.call(progress);
+        if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
+          request.headers['User-Agent'] = streamInfo.userAgent!;
         }
 
-        await sink.flush();
-        await sink.close();
+        final streamedResponse = await client.send(request).timeout(const Duration(seconds: 45));
+        if (streamedResponse.statusCode >= 200 && streamedResponse.statusCode < 300) {
+          final totalBytes = streamedResponse.contentLength ?? streamInfo.format.contentLength ?? 0;
+          int receivedBytes = 0;
+          final sink = file.openWrite();
 
+          await for (final chunk in streamedResponse.stream) {
+            sink.add(chunk);
+            receivedBytes += chunk.length;
+            final progress = totalBytes > 0
+                ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
+                : (receivedBytes / (4 * 1024 * 1024)).clamp(0.05, 0.95);
+            _activeDownloads[song.id] = progress;
+            _downloadProgressController.add(Map.from(_activeDownloads));
+            onProgress?.call(progress);
+          }
+
+          await sink.flush();
+          await sink.close();
+          downloadSuccess = true;
+        } else {
+          debugPrint('[DownloadCacheService] Stream request failed with code ${streamedResponse.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('[DownloadCacheService] Direct HTTP download error: $e');
+      }
+
+      // Secondary Attempt: YoutubeExplode binary stream if HTTP was blocked or 403
+      if (!downloadSuccess) {
+        debugPrint('[DownloadCacheService] Trying YoutubeExplode binary download fallback...');
+        final yt = YoutubeExplode();
+        try {
+          final cleanId = InnerTubeApiClient.cleanVideoId(song.id);
+          final manifest = await yt.videos.streamsClient.getManifest(cleanId).timeout(const Duration(seconds: 6));
+          final audioStreams = manifest.audioOnly;
+          if (audioStreams.isNotEmpty) {
+            final bestAudio = audioStreams.withHighestBitrate();
+            final stream = yt.videos.streamsClient.get(bestAudio);
+            final totalBytes = bestAudio.size.totalBytes;
+            int receivedBytes = 0;
+            final sink = file.openWrite();
+
+            await for (final chunk in stream) {
+              sink.add(chunk);
+              receivedBytes += chunk.length;
+              final progress = totalBytes > 0
+                  ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
+                  : (receivedBytes / (4 * 1024 * 1024)).clamp(0.05, 0.95);
+              _activeDownloads[song.id] = progress;
+              _downloadProgressController.add(Map.from(_activeDownloads));
+              onProgress?.call(progress);
+            }
+
+            await sink.flush();
+            await sink.close();
+            downloadSuccess = true;
+          }
+        } catch (e) {
+          debugPrint('[DownloadCacheService] YoutubeExplode binary download error: $e');
+        } finally {
+          yt.close();
+        }
+      }
+
+      if (downloadSuccess && await file.exists() && await file.length() > 1000) {
         // Save metadata
         final downloadedSong = song.copyWith(
           isDownloaded: true,
@@ -186,8 +236,6 @@ class DownloadCacheService {
 
         debugPrint('[DownloadCacheService] Download complete: $filePath');
         return true;
-      } else {
-        debugPrint('[DownloadCacheService] Stream request failed with code ${streamedResponse.statusCode}');
       }
     } catch (e) {
       debugPrint('[DownloadCacheService] Error downloading song: $e');
