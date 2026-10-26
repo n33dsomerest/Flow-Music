@@ -138,11 +138,15 @@ class DownloadCacheService {
   Future<void> removeDownloadedSong(String songId) async {
     try {
       final songs = await getDownloadedSongs();
-      final match = songs.firstWhere((s) => s.id == songId, orElse: () => SongModel(id: '', title: '', artist: ''));
-      if (match.streamUrl != null && match.streamUrl!.isNotEmpty) {
-        final file = File(match.streamUrl!);
-        if (await file.exists()) {
-          await file.delete();
+      for (final song in songs) {
+        if (song.id == songId) {
+          if (song.streamUrl != null && song.streamUrl!.isNotEmpty) {
+            final file = File(song.streamUrl!);
+            if (await file.exists()) {
+              await file.delete();
+            }
+          }
+          break;
         }
       }
 
