@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart' hide StreamInfo;
 import '../../core/constants/api_constants.dart';
 import '../models/song_model.dart';
 import '../models/stream_info_model.dart';
@@ -227,9 +227,8 @@ class InnerTubeApiClient {
     final yt = YoutubeExplode();
     final songs = <SongModel>[];
     try {
-      final videoStream = yt.search.getVideos(query);
-      final list = await videoStream.take(15).toList().timeout(const Duration(milliseconds: 4000));
-      for (final video in list) {
+      final searchList = await yt.search.getVideos(query).timeout(const Duration(milliseconds: 4000));
+      for (final video in searchList.take(15)) {
         songs.add(SongModel(
           id: video.id.value,
           title: video.title,
@@ -238,6 +237,8 @@ class InnerTubeApiClient {
           thumbnailUrl: video.thumbnails.highResUrl,
         ));
       }
+    } catch (e) {
+      debugPrint('[MusicApi] YoutubeExplode search error: $e');
     } finally {
       yt.close();
     }
@@ -313,13 +314,13 @@ class InnerTubeApiClient {
           final streamUrl = bestAudio.url.toString();
 
           if (streamUrl.isNotEmpty) {
-            debugPrint('[MusicApi] YoutubeExplode resolved stream (${bestAudio.codec.mimeType}, ${bestAudio.bitrate})');
+            debugPrint('[MusicApi] YoutubeExplode resolved stream (${bestAudio.container.name}, ${bestAudio.bitrate})');
             final info = StreamInfo(
               videoId: cleanId,
               streamUrl: streamUrl,
               format: AudioFormat(
                 itag: bestAudio.tag,
-                mimeType: bestAudio.codec.mimeType,
+                mimeType: 'audio/${bestAudio.container.name}',
                 bitrate: bestAudio.bitrate.bitsPerSecond,
                 contentLength: bestAudio.size.totalBytes,
                 url: streamUrl,
