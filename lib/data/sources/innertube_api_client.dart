@@ -20,6 +20,13 @@ class InnerTubeApiClient {
   static final Map<String, StreamInfo> _streamCache = {};
   static final Map<String, String> _lyricsCache = {};
 
+  // High-availability Cobalt API instances for fast direct audio extraction
+  static const List<String> _cobaltInstances = [
+    'https://api.cobalt.tools',
+    'https://cobalt-api.kwiatekm.tokyo',
+    'https://cobalt.canine.tools',
+  ];
+
   // High-availability Piped API instances
   static const List<String> _pipedInstances = [
     'https://pipedapi.adminforge.de',
@@ -304,13 +311,26 @@ class InnerTubeApiClient {
     }
 
     // 1. YoutubeExplode Pure-Dart manifest extraction (Primary)
+    // Uses AndroidVR, Safari, and iOS clients to bypass web botguard & cipher throttling
     try {
       final yt = YoutubeExplode();
       try {
-        final manifest = await yt.videos.streamsClient.getManifest(cleanId).timeout(const Duration(seconds: 5));
+        final manifest = await yt.videos.streamsClient.getManifest(
+          cleanId,
+          ytClients: [
+            YoutubeApiClient.androidVr,
+            YoutubeApiClient.safari,
+            YoutubeApiClient.ios,
+          ],
+        ).timeout(const Duration(seconds: 15));
+
         final audioStreams = manifest.audioOnly;
         if (audioStreams.isNotEmpty) {
-          final bestAudio = audioStreams.withHighestBitrate();
+          // Prefer MP4/AAC container for 100% universal Android hardware audio decoding
+          final m4aStreams = audioStreams.where((s) => s.container == Container.mp4).toList();
+          final bestAudio = m4aStreams.isNotEmpty
+              ? m4aStreams.withHighestBitrate()
+              : audioStreams.withHighestBitrate();
           final streamUrl = bestAudio.url.toString();
 
           if (streamUrl.isNotEmpty) {
@@ -338,10 +358,78 @@ class InnerTubeApiClient {
       debugPrint('[MusicApi] YoutubeExplode stream error for $cleanId: $e');
     }
 
-    // 2. Piped API Stream Proxy (Secondary)
+    // 2. Cobalt API Direct Stream Fallback (Secondary)
+    final cobaltStream = await _resolveCobaltStream(cleanId);
+    if (cobaltStream != null) {
+      _streamCache[cleanId] = cobaltStream;
+      return cobaltStream;
+    }
+
+    // 3. Piped API Stream Proxy (Tertiary)
+    final pipedStream = await _resolvePipedStream(cleanId);
+    if (pipedStream != null) {
+      _streamCache[cleanId] = pipedStream;
+      return pipedStream;
+    }
+
+    // 4. Invidious API Stream Fallback (Quaternary)
+    final invidiousStream = await _resolveInvidiousStream(cleanId);
+    if (invidiousStream != null) {
+      _streamCache[cleanId] = invidiousStream;
+      return invidiousStream;
+    }
+
+    return null;
+  }
+
+  /// Resolve stream from Cobalt API
+  Future<StreamInfo?> _resolveCobaltStream(String videoId) async {
+    for (final base in _cobaltInstances) {
+      try {
+        final uri = Uri.parse(base);
+        final body = jsonEncode({
+          'url': 'https://www.youtube.com/watch?v=$videoId',
+          'downloadMode': 'audio',
+          'audioFormat': 'mp3',
+        });
+        final res = await _httpClient.post(
+          uri,
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent': 'FlowMusic/1.0',
+          },
+          body: body,
+        ).timeout(const Duration(seconds: 4));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final streamUrl = data['url']?.toString() ?? '';
+          if (streamUrl.isNotEmpty && streamUrl.startsWith('http')) {
+            debugPrint('[MusicApi] Cobalt resolved stream from $base');
+            return StreamInfo(
+              videoId: videoId,
+              streamUrl: streamUrl,
+              format: AudioFormat(
+                itag: 140,
+                mimeType: 'audio/mpeg',
+                bitrate: 320000,
+                url: streamUrl,
+              ),
+              expiresAt: DateTime.now().add(const Duration(hours: 4)),
+            );
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Resolve stream from Piped API
+  Future<StreamInfo?> _resolvePipedStream(String videoId) async {
     for (final base in _pipedInstances) {
       try {
-        final uri = Uri.parse('$base/streams/$cleanId');
+        final uri = Uri.parse('$base/streams/$videoId');
         final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 3800));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -353,8 +441,8 @@ class InnerTubeApiClient {
 
             if (streamUrl.isNotEmpty && streamUrl.startsWith('http')) {
               debugPrint('[MusicApi] Piped resolved stream from $base');
-              final info = StreamInfo(
-                videoId: cleanId,
+              return StreamInfo(
+                videoId: videoId,
                 streamUrl: streamUrl,
                 format: AudioFormat(
                   itag: (best['itag'] as num?)?.toInt() ?? 140,
@@ -365,18 +453,19 @@ class InnerTubeApiClient {
                 ),
                 expiresAt: DateTime.now().add(const Duration(hours: 4)),
               );
-              _streamCache[cleanId] = info;
-              return info;
             }
           }
         }
       } catch (_) {}
     }
+    return null;
+  }
 
-    // 3. Invidious API Stream Fallback (Tertiary)
+  /// Resolve stream from Invidious API
+  Future<StreamInfo?> _resolveInvidiousStream(String videoId) async {
     for (final base in _invidiousInstances) {
       try {
-        final uri = Uri.parse('$base/api/v1/videos/$cleanId');
+        final uri = Uri.parse('$base/api/v1/videos/$videoId');
         final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 3500));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -389,8 +478,8 @@ class InnerTubeApiClient {
               final streamUrl = best['url']?.toString() ?? '';
               if (streamUrl.isNotEmpty) {
                 debugPrint('[MusicApi] Invidious resolved stream from $base');
-                final info = StreamInfo(
-                  videoId: cleanId,
+                return StreamInfo(
+                  videoId: videoId,
                   streamUrl: streamUrl,
                   format: AudioFormat(
                     itag: (best['itag'] as num?)?.toInt() ?? 140,
@@ -401,14 +490,13 @@ class InnerTubeApiClient {
                   ),
                   expiresAt: DateTime.now().add(const Duration(hours: 4)),
                 );
-                _streamCache[cleanId] = info;
-                return info;
               }
             }
           }
         }
       } catch (_) {}
     }
+    return null;
 
     return null;
   }

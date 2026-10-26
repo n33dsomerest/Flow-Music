@@ -361,7 +361,7 @@ class _SearchViewState extends State<SearchView> {
               title: const Text('ดาวน์โหลดไว้ฟังออฟไลน์', style: TextStyle(color: Colors.white)),
               onTap: () async {
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('เริ่มดาวน์โหลด "${song.title}" ไปที่ /storage/emulated/0/Music...')));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('เริ่มดาวน์โหลด "${song.title}"...')));
                 final ok = await _downloadService.downloadSong(song);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(

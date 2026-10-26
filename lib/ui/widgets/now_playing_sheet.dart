@@ -198,7 +198,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                                 onPressed: () async {
                                   if (_isDownloaded) {
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('เพลงนี้ดาวน์โหลดเก็บไว้ใน /storage/emulated/0/Music แล้ว')),
+                                      const SnackBar(content: Text('เพลงนี้ดาวน์โหลดเก็บไว้ในคลังเพลงเรียบร้อยแล้ว')),
                                     );
                                     return;
                                   }
@@ -215,7 +215,7 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                                     setState(() => _isDownloaded = ok);
                                     if (ok) {
                                       ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์ 100%! บันทึกที่ /storage/emulated/0/Music')),
+                                        const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์ 100%! พร้อมฟังแบบออฟไลน์ในคลังเพลง')),
                                       );
                                     } else {
                                       ScaffoldMessenger.of(context).showSnackBar(
