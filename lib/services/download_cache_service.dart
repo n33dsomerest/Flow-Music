@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -7,28 +8,60 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/models/song_model.dart';
 import '../data/sources/innertube_api_client.dart';
 
-/// Service managing offline song downloads and local storage at /storage/emulated/0/Music.
+/// Service managing offline song downloads with progress tracking and storage at /storage/emulated/0/Music.
 class DownloadCacheService {
+  static final DownloadCacheService _instance = DownloadCacheService._internal();
+  factory DownloadCacheService() => _instance;
+  DownloadCacheService._internal();
+
   static const String _downloadedKey = 'downloaded_songs_cache';
   final InnerTubeApiClient _apiClient = InnerTubeApiClient();
 
+  // Download progress Stream: map of songId -> progress (0.0 to 1.0)
+  final _downloadProgressController = StreamController<Map<String, double>>.broadcast();
+  Stream<Map<String, double>> get downloadProgressStream => _downloadProgressController.stream;
+
+  final Map<String, double> _activeDownloads = {};
+  Map<String, double> get activeDownloads => Map.unmodifiable(_activeDownloads);
+  double? getDownloadProgress(String songId) => _activeDownloads[songId];
+  bool isDownloading(String songId) => _activeDownloads.containsKey(songId);
+
   /// Resolve download directory: prefers shared device Music folder (/storage/emulated/0/Music)
   Future<Directory> _getDownloadDirectory() async {
+    // 1. Try public shared Music directory: /storage/emulated/0/Music
     try {
       final sharedMusicDir = Directory('/storage/emulated/0/Music');
-      if (await sharedMusicDir.exists()) {
-        return sharedMusicDir;
+      if (!await sharedMusicDir.exists()) {
+        await sharedMusicDir.create(recursive: true);
       }
-      return await sharedMusicDir.create(recursive: true);
+      // Test if writing is allowed
+      final testFile = File('${sharedMusicDir.path}/.perm_test_${DateTime.now().millisecondsSinceEpoch}');
+      await testFile.writeAsString('ok');
+      await testFile.delete();
+      return sharedMusicDir;
     } catch (e) {
-      debugPrint('[DownloadCacheService] Failed to access /storage/emulated/0/Music ($e), using app storage');
-      final appDir = await getApplicationDocumentsDirectory();
-      final fallbackDir = Directory('${appDir.path}/Music');
-      if (!await fallbackDir.exists()) {
-        await fallbackDir.create(recursive: true);
-      }
-      return fallbackDir;
+      debugPrint('[DownloadCacheService] /storage/emulated/0/Music not writable ($e)');
     }
+
+    // 2. Try external app storage: /storage/emulated/0/Android/data/.../files/Music
+    try {
+      final extDir = await getExternalStorageDirectory();
+      if (extDir != null) {
+        final musicDir = Directory('${extDir.path}/Music');
+        if (!await musicDir.exists()) {
+          await musicDir.create(recursive: true);
+        }
+        return musicDir;
+      }
+    } catch (_) {}
+
+    // 3. Fallback to app documents
+    final appDir = await getApplicationDocumentsDirectory();
+    final fallbackDir = Directory('${appDir.path}/Music');
+    if (!await fallbackDir.exists()) {
+      await fallbackDir.create(recursive: true);
+    }
+    return fallbackDir;
   }
 
   /// Get list of all downloaded offline songs that actually exist on disk.
@@ -57,12 +90,21 @@ class DownloadCacheService {
     return songs.any((s) => s.id == songId);
   }
 
-  /// Download a song for offline playback to /storage/emulated/0/Music.
-  Future<bool> downloadSong(SongModel song) async {
+  /// Download a song for offline playback to /storage/emulated/0/Music with percentage progress.
+  Future<bool> downloadSong(SongModel song, {void Function(double progress)? onProgress}) async {
+    if (isDownloading(song.id)) return false;
+
+    _activeDownloads[song.id] = 0.0;
+    _downloadProgressController.add(Map.from(_activeDownloads));
+    onProgress?.call(0.0);
+
+    File? partialFile;
     try {
       final streamInfo = await _apiClient.getStreamInfo(song.id);
       if (streamInfo == null || streamInfo.streamUrl.isEmpty) {
         debugPrint('[DownloadCacheService] Could not resolve stream for ${song.id}');
+        _activeDownloads.remove(song.id);
+        _downloadProgressController.add(Map.from(_activeDownloads));
         return false;
       }
 
@@ -87,19 +129,33 @@ class DownloadCacheService {
           : song.id;
       final filePath = '${musicDir.path}/$baseName.$ext';
       final file = File(filePath);
+      partialFile = file;
 
       debugPrint('[DownloadCacheService] Downloading to $filePath');
 
       final client = http.Client();
       final request = http.Request('GET', Uri.parse(streamInfo.streamUrl));
-      if (streamInfo.streamUrl.contains('googlevideo.com')) {
-        request.headers['User-Agent'] = 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)';
+      if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
+        request.headers['User-Agent'] = streamInfo.userAgent!;
       }
 
       final streamedResponse = await client.send(request).timeout(const Duration(seconds: 45));
       if (streamedResponse.statusCode == 200) {
+        final totalBytes = streamedResponse.contentLength ?? streamInfo.format.contentLength ?? 0;
+        int receivedBytes = 0;
         final sink = file.openWrite();
-        await streamedResponse.stream.pipe(sink);
+
+        await for (final chunk in streamedResponse.stream) {
+          sink.add(chunk);
+          receivedBytes += chunk.length;
+          if (totalBytes > 0) {
+            final progress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
+            _activeDownloads[song.id] = progress;
+            _downloadProgressController.add(Map.from(_activeDownloads));
+            onProgress?.call(progress);
+          }
+        }
+
         await sink.flush();
         await sink.close();
 
@@ -123,6 +179,10 @@ class DownloadCacheService {
         currentList.add(jsonEncode(downloadedSong.toJson()));
         await prefs.setStringList(_downloadedKey, currentList);
 
+        _activeDownloads.remove(song.id);
+        _downloadProgressController.add(Map.from(_activeDownloads));
+        onProgress?.call(1.0);
+
         debugPrint('[DownloadCacheService] Download complete: $filePath');
         return true;
       } else {
@@ -130,7 +190,15 @@ class DownloadCacheService {
       }
     } catch (e) {
       debugPrint('[DownloadCacheService] Error downloading song: $e');
+      if (partialFile != null && await partialFile.exists()) {
+        try {
+          await partialFile.delete();
+        } catch (_) {}
+      }
     }
+
+    _activeDownloads.remove(song.id);
+    _downloadProgressController.add(Map.from(_activeDownloads));
     return false;
   }
 

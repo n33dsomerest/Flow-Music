@@ -146,35 +146,85 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                               );
                             },
                           ),
-                          IconButton(
-                            icon: Icon(
-                              _isDownloaded ? CupertinoIcons.arrow_down_circle_fill : CupertinoIcons.arrow_down_circle,
-                              color: _isDownloaded ? AppTheme.secondary : Colors.white,
-                              size: 22,
-                            ),
-                            onPressed: () async {
-                              if (_isDownloaded) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('เพลงนี้ดาวน์โหลดเก็บไว้ใน /storage/emulated/0/Music แล้ว')),
+                          StreamBuilder<Map<String, double>>(
+                            stream: _downloadService.downloadProgressStream,
+                            builder: (context, snapshot) {
+                              final progress = _downloadService.getDownloadProgress(_currentSong.id);
+                              final isDownloading = progress != null;
+
+                              if (isDownloading) {
+                                final pct = (progress * 100).toInt();
+                                return Container(
+                                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.secondary.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: AppTheme.secondary.withOpacity(0.6), width: 1.2),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                          value: progress > 0 ? progress : null,
+                                          strokeWidth: 2,
+                                          color: AppTheme.secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        '$pct%',
+                                        style: const TextStyle(
+                                          color: AppTheme.secondary,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 );
-                                return;
                               }
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('กำลังดาวน์โหลดเพลงไปยัง /storage/emulated/0/Music...')),
+
+                              return IconButton(
+                                icon: Icon(
+                                  _isDownloaded ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.arrow_down_circle,
+                                  color: _isDownloaded ? AppTheme.secondary : Colors.white,
+                                  size: 22,
+                                ),
+                                tooltip: _isDownloaded ? 'ดาวน์โหลดแล้ว' : 'ดาวน์โหลดเพลง',
+                                onPressed: () async {
+                                  if (_isDownloaded) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('เพลงนี้ดาวน์โหลดเก็บไว้ใน /storage/emulated/0/Music แล้ว')),
+                                    );
+                                    return;
+                                  }
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('เริ่มดาวน์โหลดเพลง... กำลังโหลดข้อมูล')),
+                                  );
+                                  final ok = await _downloadService.downloadSong(
+                                    _currentSong,
+                                    onProgress: (_) {
+                                      if (mounted) setState(() {});
+                                    },
+                                  );
+                                  if (mounted) {
+                                    setState(() => _isDownloaded = ok);
+                                    if (ok) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์ 100%! บันทึกที่ /storage/emulated/0/Music')),
+                                      );
+                                    } else {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('ดาวน์โหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')),
+                                      );
+                                    }
+                                  }
+                                },
                               );
-                              final ok = await _downloadService.downloadSong(_currentSong);
-                              if (mounted) {
-                                setState(() => _isDownloaded = ok);
-                                if (ok) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์! บันทึกที่ /storage/emulated/0/Music')),
-                                  );
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('ดาวน์โหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')),
-                                  );
-                                }
-                              }
                             },
                           ),
                         ],

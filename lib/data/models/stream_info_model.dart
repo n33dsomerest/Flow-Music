@@ -47,11 +47,13 @@ class StreamInfo {
   final String streamUrl;
   final AudioFormat format;
   final DateTime expiresAt;
+  final String? userAgent;
 
   const StreamInfo({
     required this.videoId,
     required this.streamUrl,
     required this.format,
     required this.expiresAt,
+    this.userAgent,
   });
 }

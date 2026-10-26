@@ -179,10 +179,8 @@ class AudioPlayerService {
         debugPrint('[AudioPlayerService] Setting stream URL (${streamInfo.format.mimeType})');
         await _player.stop();
         Map<String, String>? headers;
-        if (streamInfo.streamUrl.contains('googlevideo.com')) {
-          headers = {
-            'User-Agent': 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
-          };
+        if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
+          headers = {'User-Agent': streamInfo.userAgent!};
         }
         await _player.setUrl(
           streamInfo.streamUrl,

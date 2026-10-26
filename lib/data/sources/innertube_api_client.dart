@@ -63,6 +63,7 @@ class InnerTubeApiClient {
     String endpoint,
     Map<String, dynamic> payload, {
     Map<String, String>? customHeaders,
+    bool includeVisitorData = true,
   }) async {
     final apiKey = await _ensureApiKey();
     final url = Uri.parse('$endpoint?key=$apiKey&prettyPrint=false');
@@ -72,7 +73,7 @@ class InnerTubeApiClient {
         : Map<String, String>.from(ApiConstants.defaultHeaders);
 
     headers['X-Goog-Api-Key'] = apiKey;
-    if (_visitorData != null) {
+    if (includeVisitorData && _visitorData != null) {
       headers['X-Goog-Visitor-Id'] = _visitorData!;
     }
 
@@ -108,30 +109,28 @@ class InnerTubeApiClient {
   }
 
   /// Get direct audio stream URL with Multi-Tier Fallback:
-  /// 1. Invidious API instances (fast, pre-deciphered, high uptime)
-  /// 2. Piped API instances
-  /// 3. Cobalt API instances
-  /// 4. ANDROID_TESTSUITE InnerTube client (bypasses BotGuard / login requirements)
-  /// 5. ANDROID_MUSIC InnerTube client
-  /// 6. IOS InnerTube client
-  /// 7. WEB_EMBEDDED_PLAYER InnerTube client
-  /// 8. TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
+  /// 1. ANDROID_VR InnerTube client (Oculus Quest 2: no BotGuard/PO-Token, direct clean URLs)
+  /// 2. ANDROID_TESTSUITE InnerTube client (bypasses BotGuard / login requirements)
+  /// 3. IOS InnerTube client (direct unencrypted AAC M4A)
+  /// 4. TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
+  /// 5. WEB_EMBEDDED_PLAYER InnerTube client
+  /// 6. Invidious API instances (proxied to prevent 403 Forbidden)
+  /// 7. Piped API instances
   Future<StreamInfo?> getStreamInfo(String videoId) async {
     if (videoId.isEmpty) return null;
 
-    // 1. Try Invidious API instances
-    var streamInfo = await _fetchInvidiousStream(videoId);
+    // 1. Try ANDROID_VR (Oculus Quest 2: zero botguard blocks, pristine direct audio streams)
+    var streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'ANDROID_VR',
+      clientVersion: '1.60.19',
+      clientId: '28',
+      userAgent: 'Mozilla/5.0 (Linux; Android 10; Quest 2) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/15.0.0.0 Safari/537.36',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+    );
     if (streamInfo != null) return streamInfo;
 
-    // 2. Try Piped API instances
-    streamInfo = await _fetchPipedStream(videoId);
-    if (streamInfo != null) return streamInfo;
-
-    // 3. Try Cobalt API instances
-    streamInfo = await _fetchCobaltStream(videoId);
-    if (streamInfo != null) return streamInfo;
-
-    // 4. Try ANDROID_TESTSUITE InnerTube client
+    // 2. Try ANDROID_TESTSUITE InnerTube client
     streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'ANDROID_TESTSUITE',
@@ -142,18 +141,7 @@ class InnerTubeApiClient {
     );
     if (streamInfo != null) return streamInfo;
 
-    // 5. Try ANDROID_MUSIC InnerTube client
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'ANDROID_MUSIC',
-      clientVersion: '7.19.52',
-      clientId: '21',
-      userAgent: 'com.google.android.apps.youtube.music/7.19.52 (Linux; U; Android 11)',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-    );
-    if (streamInfo != null) return streamInfo;
-
-    // 6. Try IOS InnerTube client
+    // 3. Try IOS InnerTube client
     streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'IOS',
@@ -164,7 +152,19 @@ class InnerTubeApiClient {
     );
     if (streamInfo != null) return streamInfo;
 
-    // 7. Try WEB_EMBEDDED_PLAYER InnerTube client
+    // 4. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
+    streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      clientVersion: '2.0',
+      clientId: '85',
+      userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/11.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.00 Safari/605.1.15',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+      referer: 'https://www.youtube.com/tv',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 5. Try WEB_EMBEDDED_PLAYER InnerTube client
     streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'WEB_EMBEDDED_PLAYER',
@@ -176,19 +176,15 @@ class InnerTubeApiClient {
     );
     if (streamInfo != null) return streamInfo;
 
-    // 8. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
-    return await _fetchPlayerStream(
-      videoId,
-      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-      clientVersion: '2.0',
-      clientId: '85',
-      userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/11.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.00 Safari/605.1.15',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-      referer: 'https://www.youtube.com/tv',
-    );
+    // 6. Try Invidious API instances (proxied to prevent IP-bound 403 Forbidden)
+    streamInfo = await _fetchInvidiousStream(videoId);
+    if (streamInfo != null) return streamInfo;
+
+    // 7. Try Piped API instances
+    return await _fetchPipedStream(videoId);
   }
 
-  /// Invidious API public instance resolver (pre-deciphered, high reliability).
+  /// Invidious API public instance resolver (proxied to prevent 403 Forbidden).
   Future<StreamInfo?> _fetchInvidiousStream(String videoId) async {
     final instances = [
       'https://inv.tux.pizza',
@@ -197,7 +193,6 @@ class InnerTubeApiClient {
       'https://iv.ggtyler.dev',
       'https://invidious.drgns.space',
       'https://yewtu.be',
-      'https://invidious.private.coffee',
     ];
 
     for (final base in instances) {
@@ -205,7 +200,7 @@ class InnerTubeApiClient {
         final res = await _httpClient.get(
           Uri.parse('$base/api/v1/videos/$videoId'),
           headers: {'Accept': 'application/json'},
-        ).timeout(const Duration(milliseconds: 3500));
+        ).timeout(const Duration(milliseconds: 3000));
 
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -221,7 +216,6 @@ class InnerTubeApiClient {
           }
 
           if (audioList.isNotEmpty) {
-            // Sort: prefer itag 140 (m4a) or 251 (opus), or highest bitrate
             audioList.sort((a, b) {
               final aItag = a['itag'] ?? 0;
               final bItag = b['itag'] ?? 0;
@@ -236,6 +230,10 @@ class InnerTubeApiClient {
             String streamUrl = selected['url'] as String? ?? '';
             if (streamUrl.startsWith('/')) {
               streamUrl = '$base$streamUrl';
+            } else if (streamUrl.contains('googlevideo.com')) {
+              // Route through Invidious proxy so phone does not get 403 Forbidden due to IP mismatch
+              final query = Uri.parse(streamUrl).query;
+              streamUrl = '$base/videoplayback?$query';
             }
 
             if (streamUrl.isNotEmpty) {
@@ -412,6 +410,7 @@ class InnerTubeApiClient {
         endpoint,
         payload,
         customHeaders: customHeaders,
+        includeVisitorData: false,
       );
       if (response.statusCode != 200) {
         debugPrint('[InnerTube] $clientName returned status ${response.statusCode}');
@@ -453,16 +452,16 @@ class InnerTubeApiClient {
 
       if (audioFormats.isEmpty) return null;
 
-      // Prefer formats with direct unencrypted URLs first, then Opus (251) or M4A (140)
+      // Prefer formats with direct unencrypted URLs first, then M4A (140) or Opus (251)
       audioFormats.sort((a, b) {
         final aHasUrl = (a.url != null && a.url!.isNotEmpty) ? 1 : 0;
         final bHasUrl = (b.url != null && b.url!.isNotEmpty) ? 1 : 0;
         if (aHasUrl != bHasUrl) return bHasUrl.compareTo(aHasUrl);
 
-        if (a.itag == 251) return -1;
-        if (b.itag == 251) return 1;
         if (a.itag == 140) return -1;
         if (b.itag == 140) return 1;
+        if (a.itag == 251) return -1;
+        if (b.itag == 251) return 1;
         return b.bitrate.compareTo(a.bitrate);
       });
 
@@ -489,6 +488,7 @@ class InnerTubeApiClient {
         streamUrl: streamUrl,
         format: selectedFormat,
         expiresAt: expiresAt,
+        userAgent: userAgent,
       );
     } catch (e) {
       debugPrint('[InnerTube] _fetchPlayerStream ($clientName) error: $e');
