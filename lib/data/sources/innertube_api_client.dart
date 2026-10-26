@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' hide StreamInfo;
 import '../../core/constants/api_constants.dart';
 import '../models/song_model.dart';
@@ -13,7 +15,6 @@ import '../models/stream_info_model.dart';
 /// 2. YouTube Explode Pure-Dart Engine (High-speed metadata + Signature deciphering)
 /// 3. Piped API Instances (Proxy fallback for search & pre-deciphered direct streams)
 /// 4. Invidious API Instances (Tertiary stream fallback)
-/// 5. Curated Offline-Ready Thai Hits Catalog (Guarantees zero blank screen state)
 class InnerTubeApiClient {
   final http.Client _httpClient;
 
@@ -62,14 +63,13 @@ class InnerTubeApiClient {
   }
 
   // =========================================================================
-  // SEARCH IMPLEMENTATION (InnerTube -> YoutubeExplode -> Piped -> Fallback)
+  // SEARCH IMPLEMENTATION (InnerTube -> YoutubeExplode -> Piped)
   // =========================================================================
 
   /// Search across YouTube Music InnerTube, YoutubeExplode, and Piped API.
-  /// Never returns an empty list for Thai top charts or common genres.
   Future<List<SongModel>> search(String query, {String? filter}) async {
     final cleanQuery = query.trim();
-    if (cleanQuery.isEmpty) return _curatedThaiHits;
+    if (cleanQuery.isEmpty) return [];
 
     debugPrint('[MusicApi] Searching for: "$cleanQuery"');
 
@@ -106,15 +106,7 @@ class InnerTubeApiClient {
       debugPrint('[MusicApi] Piped search error: $e');
     }
 
-    // 4. Curated Fallback: Match query or return popular Thai hits
-    debugPrint('[MusicApi] Using curated Thai hits fallback for "$cleanQuery"');
-    final queryLower = cleanQuery.toLowerCase();
-    final matched = _curatedThaiHits.where((s) {
-      return s.title.toLowerCase().contains(queryLower) ||
-          s.artist.toLowerCase().contains(queryLower);
-    }).toList();
-
-    return matched.isNotEmpty ? matched : _curatedThaiHits;
+    return [];
   }
 
   /// YouTube Music InnerTube `/youtubei/v1/search`
@@ -295,7 +287,110 @@ class InnerTubeApiClient {
   }
 
   // =========================================================================
-  // STREAM EXTRACTION (YoutubeExplode -> Piped -> Invidious)
+  // RESILIENT MANIFEST & AUDIO EXTRACTION (androidVr -> ios -> tv -> safari -> android -> default)
+  // =========================================================================
+
+  /// Resilient manifest extractor that tries clients sequentially:
+  /// [androidVr], [ios], [tv], [safari], [android], then default (null).
+  /// Each client has 12 seconds timeout. Returns the first manifest with non-empty audioOnly.
+  static Future<StreamManifest?> getManifestResilient(YoutubeExplode yt, String videoId) async {
+    final cleanId = cleanVideoId(videoId);
+    final clientsToTry = <List<YoutubeApiClient>?>[
+      [YoutubeApiClient.androidVr],
+      [YoutubeApiClient.ios],
+      [YoutubeApiClient.tv],
+      [YoutubeApiClient.safari],
+      [YoutubeApiClient.android],
+      null,
+    ];
+
+    for (final clientList in clientsToTry) {
+      try {
+        final StreamManifest manifest = clientList != null
+            ? await yt.videos.streamsClient.getManifest(cleanId, ytClients: clientList).timeout(const Duration(seconds: 12))
+            : await yt.videos.streamsClient.getManifest(cleanId).timeout(const Duration(seconds: 12));
+
+        if (manifest.audioOnly.isNotEmpty) {
+          debugPrint('[MusicApi] getManifestResilient succeeded with $clientList');
+          return manifest;
+        }
+      } catch (e) {
+        debugPrint('[MusicApi] getManifestResilient client $clientList error for $cleanId: $e');
+      }
+    }
+    debugPrint('[MusicApi] getManifestResilient failed for all clients for $cleanId');
+    return null;
+  }
+
+  /// Download audio stream directly to a temporary file for local playback fallback.
+  Future<String?> downloadAudioToTemp(String songId) async {
+    final cleanId = cleanVideoId(songId);
+    if (cleanId.isEmpty) return null;
+
+    final yt = YoutubeExplode();
+    IOSink? sink;
+    File? tempFile;
+
+    try {
+      final manifest = await getManifestResilient(yt, cleanId);
+      if (manifest == null || manifest.audioOnly.isEmpty) {
+        return null;
+      }
+
+      final audioStreams = manifest.audioOnly.toList();
+      final m4aStreams = audioStreams.where((s) => s.container == StreamContainer.mp4 || s.container.name.toLowerCase() == 'mp4').toList();
+      final bestAudio = m4aStreams.isNotEmpty
+          ? m4aStreams.withHighestBitrate()
+          : audioStreams.withHighestBitrate();
+
+      final ext = (bestAudio.container == StreamContainer.mp4 || bestAudio.container.name.toLowerCase() == 'mp4')
+          ? 'm4a'
+          : 'webm';
+
+      final tempDir = await getTemporaryDirectory();
+      final filePath = '${tempDir.path}/flow_$cleanId.$ext';
+      final file = File(filePath);
+      tempFile = file;
+
+      if (await file.exists() && await file.length() > 1000) {
+        debugPrint('[MusicApi] Temp file already exists: $filePath');
+        return filePath;
+      }
+
+      sink = file.openWrite();
+      final stream = yt.videos.streamsClient.get(bestAudio);
+      await for (final chunk in stream) {
+        sink.add(chunk);
+      }
+      await sink.flush();
+      await sink.close();
+      sink = null;
+
+      if (await file.exists() && await file.length() > 1000) {
+        debugPrint('[MusicApi] Temp file downloaded successfully: $filePath');
+        return filePath;
+      }
+    } catch (e) {
+      debugPrint('[MusicApi] downloadAudioToTemp error for $cleanId: $e');
+      if (sink != null) {
+        try {
+          await sink.close();
+        } catch (_) {}
+        sink = null;
+      }
+      if (tempFile != null && await tempFile.exists()) {
+        try {
+          await tempFile.delete();
+        } catch (_) {}
+      }
+    } finally {
+      yt.close();
+    }
+    return null;
+  }
+
+  // =========================================================================
+  // STREAM EXTRACTION (getManifestResilient -> Cobalt -> Piped -> Invidious)
   // =========================================================================
 
   /// Get direct audio stream URL for playback and download.
@@ -311,20 +406,14 @@ class InnerTubeApiClient {
     }
 
     // 1. YoutubeExplode Pure-Dart manifest extraction (Primary)
-    // Uses AndroidVR, Safari, and iOS clients to bypass web botguard & cipher throttling
     try {
       final yt = YoutubeExplode();
       try {
-        final manifest = await yt.videos.streamsClient.getManifest(
-          cleanId,
-          ytClients: [
-            YoutubeApiClient.androidVr,
-            YoutubeApiClient.safari,
-            YoutubeApiClient.ios,
-          ],
-        ).timeout(const Duration(seconds: 15));
+        final manifest = await getManifestResilient(yt, cleanId);
+        final List<AudioOnlyStreamInfo> audioStreams = manifest == null
+            ? <AudioOnlyStreamInfo>[]
+            : manifest.audioOnly.toList();
 
-        final audioStreams = manifest.audioOnly;
         if (audioStreams.isNotEmpty) {
           // Prefer MP4/AAC container for 100% universal Android hardware audio decoding
           final m4aStreams = audioStreams.where((s) => s.container == StreamContainer.mp4 || s.container.name.toLowerCase() == 'mp4').toList();
@@ -497,8 +586,6 @@ class InnerTubeApiClient {
       } catch (_) {}
     }
     return null;
-
-    return null;
   }
 
   /// Get LRC synchronized lyrics for a song.
@@ -518,139 +605,4 @@ class InnerTubeApiClient {
   Future<List<SongModel>> getPlaylistSongs(String playlistId) async {
     return await search(playlistId);
   }
-
-  // =========================================================================
-  // CURATED POPULAR THAI SONGS (Guaranteed UI populator & offline safeguard)
-  // =========================================================================
-
-  static final List<SongModel> _curatedThaiHits = [
-    const SongModel(
-      id: '1b9N-v4GkR4',
-      title: 'พิง (เพลงประกอบละคร กระเช้าสีดา)',
-      artist: 'NONT TANONT',
-      album: 'กระเช้าสีดา OST',
-      durationSeconds: 254,
-      thumbnailUrl: 'https://i.ytimg.com/vi/1b9N-v4GkR4/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 's2T4h7g_Y7E',
-      title: 'ถ้าเราเจอกันอีก (Until Then)',
-      artist: 'Tilly Birds',
-      album: 'It\'s Gonna Be OK',
-      durationSeconds: 288,
-      thumbnailUrl: 'https://i.ytimg.com/vi/s2T4h7g_Y7E/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'W-jWz07x8bI',
-      title: 'ข้างกัน (City)',
-      artist: 'Three Man Down feat. ออม TELEx TELEXs',
-      album: 'This City Won\'t Be Lonely Anymore',
-      durationSeconds: 236,
-      thumbnailUrl: 'https://i.ytimg.com/vi/W-jWz07x8bI/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: '5b2T7JvW4xk',
-      title: 'โต๊ะริม (melt)',
-      artist: 'NONT TANONT',
-      album: 'CLIMAX',
-      durationSeconds: 230,
-      thumbnailUrl: 'https://i.ytimg.com/vi/5b2T7JvW4xk/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'mH-Rk_4kUuU',
-      title: 'โคตรพิเศษ (แปลรักฉันด้วยใจเธอ OST)',
-      artist: 'Billkin',
-      album: 'แปลรักฉันด้วยใจเธอ Part 1',
-      durationSeconds: 238,
-      thumbnailUrl: 'https://i.ytimg.com/vi/mH-Rk_4kUuU/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'jK3a4p5hRsc',
-      title: 'วาดไว้ (Recall)',
-      artist: 'BOWKYLION',
-      album: 'วาดไว้',
-      durationSeconds: 247,
-      thumbnailUrl: 'https://i.ytimg.com/vi/jK3a4p5hRsc/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'G7_8x3g_l6Q',
-      title: 'นะหน้าทอง',
-      artist: 'โจอี้ ภูวศิษฐ์ (Joey Phuwasit)',
-      album: 'Moonไรเดอร์',
-      durationSeconds: 260,
-      thumbnailUrl: 'https://i.ytimg.com/vi/G7_8x3g_l6Q/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'R6r3C2fQzYg',
-      title: 'ดวงใจ',
-      artist: 'Palmy',
-      album: 'ดวงใจ',
-      durationSeconds: 275,
-      thumbnailUrl: 'https://i.ytimg.com/vi/R6r3C2fQzYg/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'pP4_xY7k1sQ',
-      title: 'สองใจ (เพลงประกอบละครวันทอง)',
-      artist: 'ดา เอ็นโดรฟิน (Da Endorphine)',
-      album: 'วันทอง OST',
-      durationSeconds: 240,
-      thumbnailUrl: 'https://i.ytimg.com/vi/pP4_xY7k1sQ/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'uL3j7sP6dVk',
-      title: 'กีต้าร์ตัวโปรด',
-      artist: 'Three Man Down',
-      album: '28',
-      durationSeconds: 220,
-      thumbnailUrl: 'https://i.ytimg.com/vi/uL3j7sP6dVk/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: '3f9h8Q2kVzY',
-      title: 'ซ่อนกลิ่น',
-      artist: 'Palmy',
-      album: 'ซ่อนกลิ่น',
-      durationSeconds: 255,
-      thumbnailUrl: 'https://i.ytimg.com/vi/3f9h8Q2kVzY/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'bX8k2P7lQ3g',
-      title: 'แอบดี',
-      artist: 'STAMP',
-      album: 'EKAMAI MALL',
-      durationSeconds: 235,
-      thumbnailUrl: 'https://i.ytimg.com/vi/bX8k2P7lQ3g/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'aV6t9L5xR2p',
-      title: 'เลือดกรุ๊ปบี',
-      artist: 'BINK',
-      album: 'เลือดกรุ๊ปบี',
-      durationSeconds: 215,
-      thumbnailUrl: 'https://i.ytimg.com/vi/aV6t9L5xR2p/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'wS9k3L6yP2d',
-      title: 'คิด(แต่ไม่)ถึง (Same Page?)',
-      artist: 'Tilly Birds',
-      album: 'ผู้เดียว',
-      durationSeconds: 250,
-      thumbnailUrl: 'https://i.ytimg.com/vi/wS9k3L6yP2d/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'mK4j7P9yR2w',
-      title: 'เพื่อนเล่น ไม่เล่นเพื่อน (Just Being Friendly)',
-      artist: 'Tilly Birds ft. MILLI',
-      album: 'It\'s Gonna Be OK',
-      durationSeconds: 232,
-      thumbnailUrl: 'https://i.ytimg.com/vi/mK4j7P9yR2w/hqdefault.jpg',
-    ),
-    const SongModel(
-      id: 'yL8p2X4k7Wm',
-      title: 'ฝนตกไหม',
-      artist: 'Three Man Down',
-      album: 'This City Won\'t Be Lonely Anymore',
-      durationSeconds: 260,
-      thumbnailUrl: 'https://i.ytimg.com/vi/yL8p2X4k7Wm/hqdefault.jpg',
-    ),
-  ];
 }

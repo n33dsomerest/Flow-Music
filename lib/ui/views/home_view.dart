@@ -589,12 +589,12 @@ class _HomeViewState extends State<HomeView> {
                           Icon(CupertinoIcons.music_note_list, size: 40, color: AppTheme.primaryLight.withOpacity(0.8)),
                           const SizedBox(height: 12),
                           Text(
-                            'กำลังโหลดเพลง $_selectedMood...',
+                            'ไม่พบเพลงในหมวด $_selectedMood หรือการเชื่อมต่อขัดข้อง',
                             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 6),
                           const Text(
-                            'หากใช้เวลานานเกินไป กรุณากดปุ่มเพื่อลองใหม่อีกครั้ง',
+                            'กรุณากดปุ่มเพื่อลองใหม่อีกครั้ง หรือเลื่อนลงเพื่อดึงข้อมูลใหม่',
                             style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                             textAlign: TextAlign.center,
                           ),

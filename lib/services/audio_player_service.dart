@@ -177,39 +177,57 @@ class AudioPlayerService {
         }
       }
 
-      // 2. Resolve direct stream URL using Multi-Source Fallback (Invidious / Piped / Cobalt / InnerTube)
-      final streamInfo = await _apiClient.getStreamInfo(song.id);
-      if (streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
-        debugPrint('[AudioPlayerService] Setting stream URL (${streamInfo.format.mimeType})');
-        await _player.stop();
-        Map<String, String>? headers;
-        if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
-          headers = {'User-Agent': streamInfo.userAgent!};
+      bool isPlaying = false;
+
+      // (a) getStreamInfo -> setUrl (ครอบ try/catch แยก, ล้มเหลวให้ clearCache)
+      try {
+        final streamInfo = await _apiClient.getStreamInfo(song.id);
+        if (streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
+          debugPrint('[AudioPlayerService] Setting stream URL (${streamInfo.format.mimeType})');
+          await _player.stop();
+          Map<String, String>? headers;
+          if (streamInfo.userAgent != null && streamInfo.userAgent!.isNotEmpty) {
+            headers = {'User-Agent': streamInfo.userAgent!};
+          }
+          await _player.setUrl(
+            streamInfo.streamUrl,
+            headers: headers,
+          );
+          _player.play();
+          isPlaying = true;
+        } else {
+          InnerTubeApiClient.clearCache(song.id);
         }
-        await _player.setUrl(
-          streamInfo.streamUrl,
-          headers: headers,
-        );
-        _player.play();
-      } else {
+      } catch (e) {
+        debugPrint('[AudioPlayerService] Stream URL playback failed: $e');
         InnerTubeApiClient.clearCache(song.id);
+      }
+
+      // (b) ถ้ายังไม่เล่น เรียก _apiClient.downloadAudioToTemp(song.id) แล้ว setFilePath เล่นจากไฟล์
+      if (!isPlaying) {
+        try {
+          debugPrint('[AudioPlayerService] Attempting temp audio file download fallback...');
+          final tempPath = await _apiClient.downloadAudioToTemp(song.id);
+          if (tempPath != null && await File(tempPath).exists()) {
+            debugPrint('[AudioPlayerService] Playing from temp audio file: $tempPath');
+            await _player.stop();
+            await _player.setFilePath(tempPath);
+            _player.play();
+            isPlaying = true;
+          }
+        } catch (e) {
+          debugPrint('[AudioPlayerService] Temp file playback failed: $e');
+        }
+      }
+
+      // (c) ถ้ายังไม่เล่นอีก ให้ส่ง PlaybackStatus.error
+      if (!isPlaying) {
+        debugPrint('[AudioPlayerService] All playback attempts failed for ${song.id}');
         _statusController.add(PlaybackStatus.error);
-        debugPrint('[AudioPlayerService] Failed to resolve stream for ${song.id}');
       }
     } catch (e) {
       debugPrint('[AudioPlayerService] Playback error: $e');
       InnerTubeApiClient.clearCache(song.id);
-      try {
-        final retryStream = await _apiClient.getStreamInfo(song.id);
-        if (retryStream != null && retryStream.streamUrl.isNotEmpty) {
-          await _player.stop();
-          await _player.setUrl(retryStream.streamUrl);
-          _player.play();
-          return;
-        }
-      } catch (retryError) {
-        debugPrint('[AudioPlayerService] Retry playback error: $retryError');
-      }
       _statusController.add(PlaybackStatus.error);
     }
   }

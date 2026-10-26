@@ -63,7 +63,7 @@ class DownloadCacheService {
     return songs.any((s) => s.id == songId);
   }
 
-  /// Download a song for offline playback to /storage/emulated/0/Music with percentage progress.
+  /// Download a song for offline playback with percentage progress.
   Future<bool> downloadSong(SongModel song, {void Function(double progress)? onProgress}) async {
     if (isDownloading(song.id)) return false;
 
@@ -72,64 +72,55 @@ class DownloadCacheService {
     onProgress?.call(0.0);
 
     File? partialFile;
+    IOSink? activeSink;
+    final yt = YoutubeExplode();
+
     try {
+      // 1. Try to fetch streamInfo (do not return false immediately if null)
       final streamInfo = await _apiClient.getStreamInfo(song.id);
-      if (streamInfo == null || streamInfo.streamUrl.isEmpty) {
-        debugPrint('[DownloadCacheService] Could not resolve stream for ${song.id}');
-        _activeDownloads.remove(song.id);
-        _downloadProgressController.add(Map.from(_activeDownloads));
-        return false;
-      }
 
       final musicDir = await _getDownloadDirectory();
-
-      // Determine extension based on mimeType
-      String ext = 'mp3';
-      final mime = streamInfo.format.mimeType.toLowerCase();
-      if (mime.contains('audio/mp4') || mime.contains('m4a')) {
-        ext = 'm4a';
-      } else {
-        ext = 'mp3';
-      }
-
-      // Safe clean filename: "Artist - Title.ext"
       final safeArtist = song.artist.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       final safeTitle = song.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       final baseName = (safeArtist.isNotEmpty && safeTitle.isNotEmpty)
           ? '$safeArtist - $safeTitle'
           : song.id;
-      final filePath = '${musicDir.path}/$baseName.$ext';
-      final file = File(filePath);
-      partialFile = file;
-
-      debugPrint('[DownloadCacheService] Downloading to $filePath');
 
       bool downloadSuccess = false;
+      String filePath = '';
 
-      // Primary Attempt: YoutubeExplode binary stream with androidVr/safari/ios clients
-      final yt = YoutubeExplode();
+      // Primary Attempt: Binary stream download via InnerTubeApiClient.getManifestResilient
       try {
         final cleanId = InnerTubeApiClient.cleanVideoId(song.id);
-        final manifest = await yt.videos.streamsClient.getManifest(
-          cleanId,
-          ytClients: [
-            YoutubeApiClient.androidVr,
-            YoutubeApiClient.safari,
-            YoutubeApiClient.ios,
-          ],
-        ).timeout(const Duration(seconds: 15));
+        final manifest = await InnerTubeApiClient.getManifestResilient(yt, cleanId);
+        final List<AudioOnlyStreamInfo> audioStreams = manifest == null
+            ? <AudioOnlyStreamInfo>[]
+            : manifest.audioOnly.toList();
 
-        final audioStreams = manifest.audioOnly;
         if (audioStreams.isNotEmpty) {
           final m4aStreams = audioStreams.where((s) => s.container == StreamContainer.mp4 || s.container.name.toLowerCase() == 'mp4').toList();
           final bestAudio = m4aStreams.isNotEmpty
               ? m4aStreams.withHighestBitrate()
               : audioStreams.withHighestBitrate();
 
+          // กำหนดนามสกุลไฟล์: audio/mp4 หรือ m4a -> m4a, webm/opus -> webm, อื่นๆ -> mp3
+          String ext = 'mp3';
+          final formatStr = '${bestAudio.codec} ${bestAudio.container.name}'.toLowerCase();
+          if (formatStr.contains('audio/mp4') || formatStr.contains('m4a') || formatStr.contains('mp4')) {
+            ext = 'm4a';
+          } else if (formatStr.contains('webm') || formatStr.contains('opus')) {
+            ext = 'webm';
+          }
+
+          filePath = '${musicDir.path}/$baseName.$ext';
+          final file = File(filePath);
+          partialFile = file;
+
           final stream = yt.videos.streamsClient.get(bestAudio);
           final totalBytes = bestAudio.size.totalBytes;
           int receivedBytes = 0;
           final sink = file.openWrite();
+          activeSink = sink;
 
           await for (final chunk in stream) {
             sink.add(chunk);
@@ -144,19 +135,42 @@ class DownloadCacheService {
 
           await sink.flush();
           await sink.close();
+          activeSink = null;
           downloadSuccess = true;
-          debugPrint('[DownloadCacheService] YoutubeExplode binary download succeeded');
+          debugPrint('[DownloadCacheService] Binary download succeeded: $filePath');
         }
       } catch (e) {
-        debugPrint('[DownloadCacheService] YoutubeExplode binary download error: $e');
-      } finally {
-        yt.close();
+        debugPrint('[DownloadCacheService] Binary download error: $e');
+        if (activeSink != null) {
+          try {
+            await activeSink.close();
+          } catch (_) {}
+          activeSink = null;
+        }
+        if (partialFile != null && await partialFile.exists()) {
+          try {
+            await partialFile.delete();
+          } catch (_) {}
+        }
       }
 
-      // Secondary Attempt: Direct HTTP streaming download from resolved stream
-      if (!downloadSuccess) {
+      // Secondary Attempt: Direct HTTP streaming download fallback (ONLY when streamInfo != null)
+      if (!downloadSuccess && streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
         debugPrint('[DownloadCacheService] Trying HTTP streaming download fallback...');
         try {
+          // กำหนดนามสกุลไฟล์: audio/mp4 หรือ m4a -> m4a, webm/opus -> webm, อื่นๆ -> mp3
+          String ext = 'mp3';
+          final mime = streamInfo.format.mimeType.toLowerCase();
+          if (mime.contains('audio/mp4') || mime.contains('m4a')) {
+            ext = 'm4a';
+          } else if (mime.contains('webm') || mime.contains('opus')) {
+            ext = 'webm';
+          }
+
+          filePath = '${musicDir.path}/$baseName.$ext';
+          final file = File(filePath);
+          partialFile = file;
+
           final client = http.Client();
           final request = http.Request('GET', Uri.parse(streamInfo.streamUrl))
             ..followRedirects = true
@@ -171,6 +185,7 @@ class DownloadCacheService {
             final totalBytes = streamedResponse.contentLength ?? streamInfo.format.contentLength ?? 0;
             int receivedBytes = 0;
             final sink = file.openWrite();
+            activeSink = sink;
 
             await for (final chunk in streamedResponse.stream) {
               sink.add(chunk);
@@ -185,17 +200,29 @@ class DownloadCacheService {
 
             await sink.flush();
             await sink.close();
+            activeSink = null;
             downloadSuccess = true;
-            debugPrint('[DownloadCacheService] HTTP streaming download succeeded');
+            debugPrint('[DownloadCacheService] HTTP streaming download succeeded: $filePath');
           } else {
             debugPrint('[DownloadCacheService] Stream request failed with code ${streamedResponse.statusCode}');
           }
         } catch (e) {
           debugPrint('[DownloadCacheService] Direct HTTP download error: $e');
+          if (activeSink != null) {
+            try {
+              await activeSink.close();
+            } catch (_) {}
+            activeSink = null;
+          }
+          if (partialFile != null && await partialFile.exists()) {
+            try {
+              await partialFile.delete();
+            } catch (_) {}
+          }
         }
       }
 
-      if (downloadSuccess && await file.exists() && await file.length() > 1000) {
+      if (downloadSuccess && filePath.isNotEmpty && await File(filePath).exists() && await File(filePath).length() > 1000) {
         // Save metadata
         final downloadedSong = song.copyWith(
           isDownloaded: true,
@@ -225,11 +252,19 @@ class DownloadCacheService {
       }
     } catch (e) {
       debugPrint('[DownloadCacheService] Error downloading song: $e');
+      if (activeSink != null) {
+        try {
+          await activeSink.close();
+        } catch (_) {}
+        activeSink = null;
+      }
       if (partialFile != null && await partialFile.exists()) {
         try {
           await partialFile.delete();
         } catch (_) {}
       }
+    } finally {
+      yt.close();
     }
 
     _activeDownloads.remove(song.id);

@@ -14,7 +14,7 @@ dependencies:
   http: ^1.2.2
 
   # YouTube Engine for Pure-Dart Audio Stream & Manifest Extraction
-  youtube_explode_dart: ^2.3.10
+  youtube_explode_dart: ^2.5.3
 
   # Embedded JavaScript Engine for YouTube Cipher & n-sig solver
   flutter_js: ^0.8.1

@@ -136,7 +136,9 @@ class _SearchViewState extends State<SearchView> {
               child: _isSearching
                   ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryLight))
                   : _searchResults.isEmpty
-                      ? _buildInitialSuggestions()
+                      ? (_searchController.text.trim().isEmpty
+                          ? _buildInitialSuggestions()
+                          : _buildNoResultsView())
                       : _buildSearchResultsList(),
             ),
           ],
@@ -214,6 +216,54 @@ class _SearchViewState extends State<SearchView> {
           ),
           const SizedBox(height: 160),
         ],
+      ),
+    );
+  }
+
+  /// Empty / No Results View with Retry
+  Widget _buildNoResultsView() {
+    final query = _searchController.text.trim();
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceLight.withOpacity(0.35),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(CupertinoIcons.search, size: 48, color: Colors.white24),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'ไม่พบผลการค้นหาสำหรับ "$query"',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, color: Colors.white70, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'กรุณาตรวจสอบการสะกด หรือลองค้นหาใหม่อีกครั้ง',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.white38),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              ),
+              icon: const Icon(CupertinoIcons.arrow_clockwise, size: 16),
+              label: const Text('ลองใหม่อีกครั้ง', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () => _onSearchChanged(query),
+            ),
+            const SizedBox(height: 120),
+          ],
+        ),
       ),
     );
   }
