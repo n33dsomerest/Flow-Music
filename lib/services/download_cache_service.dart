@@ -121,7 +121,7 @@ class DownloadCacheService {
 
         final audioStreams = manifest.audioOnly;
         if (audioStreams.isNotEmpty) {
-          final m4aStreams = audioStreams.where((s) => s.container == Container.mp4).toList();
+          final m4aStreams = audioStreams.where((s) => s.container == StreamContainer.mp4 || s.container.name.toLowerCase() == 'mp4').toList();
           final bestAudio = m4aStreams.isNotEmpty
               ? m4aStreams.withHighestBitrate()
               : audioStreams.withHighestBitrate();

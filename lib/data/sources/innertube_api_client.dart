@@ -327,7 +327,7 @@ class InnerTubeApiClient {
         final audioStreams = manifest.audioOnly;
         if (audioStreams.isNotEmpty) {
           // Prefer MP4/AAC container for 100% universal Android hardware audio decoding
-          final m4aStreams = audioStreams.where((s) => s.container == Container.mp4).toList();
+          final m4aStreams = audioStreams.where((s) => s.container == StreamContainer.mp4 || s.container.name.toLowerCase() == 'mp4').toList();
           final bestAudio = m4aStreams.isNotEmpty
               ? m4aStreams.withHighestBitrate()
               : audioStreams.withHighestBitrate();
