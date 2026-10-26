@@ -7,7 +7,7 @@ import '../../services/audio_player_service.dart';
 import '../theme/app_theme.dart';
 import 'now_playing_sheet.dart';
 
-/// Floating Mini-Player bar shown above bottom navigation.
+/// Floating Cyber-Glass Mini-Player bar shown above bottom navigation.
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
 
@@ -32,24 +32,29 @@ class MiniPlayer extends StatelessWidget {
             );
           },
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             height: 64,
             decoration: BoxDecoration(
-              color: AppTheme.surfaceLight.withOpacity(0.85),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.white.withOpacity(0.12)),
-              boxShadow: const [
+              color: const Color(0xE8181A28),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white.withOpacity(0.14), width: 1.0),
+              boxShadow: [
                 BoxShadow(
-                  color: Colors.black38,
+                  color: Colors.black.withOpacity(0.4),
                   blurRadius: 16,
-                  offset: Offset(0, 4),
+                  offset: const Offset(0, 4),
+                ),
+                BoxShadow(
+                  color: AppTheme.primary.withOpacity(0.12),
+                  blurRadius: 14,
+                  offset: const Offset(0, 2),
                 ),
               ],
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(20),
               child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                 child: Column(
                   children: [
                     // Thin progress line along top of mini player
@@ -67,9 +72,9 @@ class MiniPlayer extends StatelessWidget {
 
                             return LinearProgressIndicator(
                               value: progress,
-                              minHeight: 2.0,
+                              minHeight: 2.2,
                               backgroundColor: Colors.transparent,
-                              valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primary),
+                              valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primaryLight),
                             );
                           },
                         );
@@ -82,19 +87,19 @@ class MiniPlayer extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         child: Row(
                           children: [
-                            // Album Thumbnail
+                            // Album Thumbnail with rounded corners & shadow
                             ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
+                              borderRadius: BorderRadius.circular(12),
                               child: CachedNetworkImage(
                                 imageUrl: song.thumbnailUrl,
-                                width: 46,
-                                height: 46,
+                                width: 44,
+                                height: 44,
                                 fit: BoxFit.cover,
                                 errorWidget: (_, __, ___) => Container(
-                                  width: 46,
-                                  height: 46,
-                                  color: AppTheme.surface,
-                                  child: const Icon(CupertinoIcons.music_note, color: Colors.white60),
+                                  width: 44,
+                                  height: 44,
+                                  color: AppTheme.surfaceHighlight,
+                                  child: const Icon(CupertinoIcons.music_note, color: Colors.white60, size: 20),
                                 ),
                               ),
                             ),
@@ -112,7 +117,7 @@ class MiniPlayer extends StatelessWidget {
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
                                       color: Colors.white,
-                                      fontWeight: FontWeight.w600,
+                                      fontWeight: FontWeight.bold,
                                       fontSize: 14,
                                     ),
                                   ),
@@ -122,7 +127,7 @@ class MiniPlayer extends StatelessWidget {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
-                                      color: Colors.white60,
+                                      color: AppTheme.textSecondary,
                                       fontSize: 12,
                                     ),
                                   ),
@@ -140,11 +145,14 @@ class MiniPlayer extends StatelessWidget {
 
                                 if (isLoading) {
                                   return const SizedBox(
-                                    width: 32,
-                                    height: 32,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
+                                    width: 34,
+                                    height: 34,
+                                    child: Padding(
+                                      padding: EdgeInsets.all(6),
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.2,
+                                        color: AppTheme.primaryLight,
+                                      ),
                                     ),
                                   );
                                 }
@@ -153,6 +161,7 @@ class MiniPlayer extends StatelessWidget {
                                   icon: Icon(
                                     isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
                                     color: Colors.white,
+                                    size: 24,
                                   ),
                                   onPressed: () {
                                     if (isPlaying) {
@@ -167,7 +176,7 @@ class MiniPlayer extends StatelessWidget {
 
                             // Skip Next Button
                             IconButton(
-                              icon: const Icon(CupertinoIcons.forward_fill, color: Colors.white, size: 20),
+                              icon: const Icon(CupertinoIcons.forward_fill, color: Colors.white70, size: 20),
                               onPressed: () => audioService.skipToNext(),
                             ),
                           ],

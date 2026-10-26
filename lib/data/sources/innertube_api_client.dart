@@ -8,8 +8,8 @@ import '../models/stream_info_model.dart';
 
 /// Client-Side Direct InnerTube API Client.
 /// Communicates directly with YouTube Music endpoints using dynamic InnerTube API key,
-/// multi-client fallback streaming (ANDROID_MUSIC / IOS / TVHTML5 / ANDROID_VR / Piped),
-/// and recursive JSON parser.
+/// multi-source fallback streaming (Invidious / Piped / Cobalt / ANDROID_TESTSUITE / ANDROID_MUSIC / IOS / TV),
+/// and robust recursive JSON parser.
 class InnerTubeApiClient {
   final http.Client _httpClient;
   final CipherResolver _cipherResolver;
@@ -108,25 +108,52 @@ class InnerTubeApiClient {
   }
 
   /// Get direct audio stream URL with Multi-Tier Fallback:
-  /// 1. ANDROID_MUSIC (cleanest direct opus/m4a audio, unencrypted, no PO-Token needed)
-  /// 2. IOS (pristine AAC 128kbps audio, direct unencrypted url)
-  /// 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER (unthrottled TV player)
-  /// 4. ANDROID_VR (Oculus client)
-  /// 5. Piped Public Proxy fallback
-  /// 6. WEB_REMIX with cipher decipher
+  /// 1. Invidious API instances (fast, pre-deciphered, high uptime)
+  /// 2. Piped API instances
+  /// 3. Cobalt API instances
+  /// 4. ANDROID_TESTSUITE InnerTube client (bypasses BotGuard / login requirements)
+  /// 5. ANDROID_MUSIC InnerTube client
+  /// 6. IOS InnerTube client
+  /// 7. WEB_EMBEDDED_PLAYER InnerTube client
+  /// 8. TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
   Future<StreamInfo?> getStreamInfo(String videoId) async {
-    // 1. Try ANDROID_MUSIC
-    var streamInfo = await _fetchPlayerStream(
+    if (videoId.isEmpty) return null;
+
+    // 1. Try Invidious API instances
+    var streamInfo = await _fetchInvidiousStream(videoId);
+    if (streamInfo != null) return streamInfo;
+
+    // 2. Try Piped API instances
+    streamInfo = await _fetchPipedStream(videoId);
+    if (streamInfo != null) return streamInfo;
+
+    // 3. Try Cobalt API instances
+    streamInfo = await _fetchCobaltStream(videoId);
+    if (streamInfo != null) return streamInfo;
+
+    // 4. Try ANDROID_TESTSUITE InnerTube client
+    streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'ANDROID_TESTSUITE',
+      clientVersion: '1.9',
+      clientId: '95',
+      userAgent: 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 5. Try ANDROID_MUSIC InnerTube client
+    streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'ANDROID_MUSIC',
       clientVersion: '7.19.52',
       clientId: '21',
       userAgent: 'com.google.android.apps.youtube.music/7.19.52 (Linux; U; Android 11)',
-      endpoint: ApiConstants.playerEndpoint,
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
     );
     if (streamInfo != null) return streamInfo;
 
-    // 2. Try IOS client fallback
+    // 6. Try IOS InnerTube client
     streamInfo = await _fetchPlayerStream(
       videoId,
       clientName: 'IOS',
@@ -137,8 +164,20 @@ class InnerTubeApiClient {
     );
     if (streamInfo != null) return streamInfo;
 
-    // 3. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER
+    // 7. Try WEB_EMBEDDED_PLAYER InnerTube client
     streamInfo = await _fetchPlayerStream(
+      videoId,
+      clientName: 'WEB_EMBEDDED_PLAYER',
+      clientVersion: '1.20241015.01.00',
+      clientId: '56',
+      userAgent: ApiConstants.defaultUserAgent,
+      endpoint: 'https://www.youtube.com/youtubei/v1/player',
+      referer: 'https://www.youtube.com/',
+    );
+    if (streamInfo != null) return streamInfo;
+
+    // 8. Try TVHTML5_SIMPLY_EMBEDDED_PLAYER InnerTube client
+    return await _fetchPlayerStream(
       videoId,
       clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
       clientVersion: '2.0',
@@ -147,33 +186,170 @@ class InnerTubeApiClient {
       endpoint: 'https://www.youtube.com/youtubei/v1/player',
       referer: 'https://www.youtube.com/tv',
     );
-    if (streamInfo != null) return streamInfo;
+  }
 
-    // 4. Try ANDROID_VR
-    streamInfo = await _fetchPlayerStream(
-      videoId,
-      clientName: 'ANDROID_VR',
-      clientVersion: '1.60.19',
-      clientId: '28',
-      userAgent: 'Mozilla/5.0 (Linux; Android 10; Quest 2) AppleWebKit/537.36',
-      endpoint: 'https://www.youtube.com/youtubei/v1/player',
-    );
-    if (streamInfo != null) return streamInfo;
+  /// Invidious API public instance resolver (pre-deciphered, high reliability).
+  Future<StreamInfo?> _fetchInvidiousStream(String videoId) async {
+    final instances = [
+      'https://inv.tux.pizza',
+      'https://invidious.nerdvpn.de',
+      'https://invidious.jing.rocks',
+      'https://iv.ggtyler.dev',
+      'https://invidious.drgns.space',
+      'https://yewtu.be',
+      'https://invidious.private.coffee',
+    ];
 
-    // 5. Try Piped API Public Mirrors
-    streamInfo = await _fetchPipedStream(videoId);
-    if (streamInfo != null) return streamInfo;
+    for (final base in instances) {
+      try {
+        final res = await _httpClient.get(
+          Uri.parse('$base/api/v1/videos/$videoId'),
+          headers: {'Accept': 'application/json'},
+        ).timeout(const Duration(milliseconds: 3500));
 
-    // 6. Try WEB_REMIX with Cipher Resolver
-    return await _fetchPlayerStream(
-      videoId,
-      clientName: 'WEB_REMIX',
-      clientVersion: '1.20241015.01.00',
-      clientId: '67',
-      userAgent: ApiConstants.defaultUserAgent,
-      endpoint: ApiConstants.playerEndpoint,
-      referer: '${ApiConstants.youtubeMusicBaseUrl}/',
-    );
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final adaptiveFormats = (data['adaptiveFormats'] as List<dynamic>?) ?? [];
+          final audioList = <Map<String, dynamic>>[];
+
+          for (final fmt in adaptiveFormats) {
+            final f = fmt as Map<String, dynamic>;
+            final type = (f['type'] ?? f['mimeType'] ?? '') as String;
+            if (type.startsWith('audio/')) {
+              audioList.add(f);
+            }
+          }
+
+          if (audioList.isNotEmpty) {
+            // Sort: prefer itag 140 (m4a) or 251 (opus), or highest bitrate
+            audioList.sort((a, b) {
+              final aItag = a['itag'] ?? 0;
+              final bItag = b['itag'] ?? 0;
+              if (aItag == 140) return -1;
+              if (bItag == 140) return 1;
+              if (aItag == 251) return -1;
+              if (bItag == 251) return 1;
+              return ((b['bitrate'] ?? 0) as num).compareTo((a['bitrate'] ?? 0) as num);
+            });
+
+            final selected = audioList.first;
+            String streamUrl = selected['url'] as String? ?? '';
+            if (streamUrl.startsWith('/')) {
+              streamUrl = '$base$streamUrl';
+            }
+
+            if (streamUrl.isNotEmpty) {
+              debugPrint('[InnerTube] Stream resolved via Invidious ($base)');
+              return StreamInfo(
+                videoId: videoId,
+                streamUrl: streamUrl,
+                format: AudioFormat(
+                  itag: selected['itag'] ?? 140,
+                  mimeType: (selected['type'] ?? selected['mimeType'] ?? 'audio/mp4') as String,
+                  bitrate: selected['bitrate'] ?? 128000,
+                  contentLength: int.tryParse(selected['clen']?.toString() ?? '0') ?? 0,
+                  url: streamUrl,
+                ),
+                expiresAt: DateTime.now().add(const Duration(hours: 4)),
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Piped API public instance resolver.
+  Future<StreamInfo?> _fetchPipedStream(String videoId) async {
+    final instances = [
+      'https://pipedapi.tokhmi.xyz',
+      'https://piped-api.garudalinux.org',
+      'https://pipedapi.adminforge.de',
+      'https://api.piped.privacydev.net',
+      'https://pipedapi.drgns.space',
+    ];
+
+    for (final base in instances) {
+      try {
+        final res = await _httpClient.get(
+          Uri.parse('$base/streams/$videoId'),
+          headers: {'Accept': 'application/json'},
+        ).timeout(const Duration(milliseconds: 3500));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final audioStreams = (data['audioStreams'] as List<dynamic>?) ?? [];
+          if (audioStreams.isNotEmpty) {
+            audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
+            final best = audioStreams.first as Map<String, dynamic>;
+            final streamUrl = best['url'] as String? ?? '';
+            if (streamUrl.isNotEmpty) {
+              debugPrint('[InnerTube] Stream resolved via Piped ($base)');
+              return StreamInfo(
+                videoId: videoId,
+                streamUrl: streamUrl,
+                format: AudioFormat(
+                  itag: best['itag'] ?? 140,
+                  mimeType: best['mimeType'] ?? 'audio/mp4',
+                  bitrate: best['bitrate'] ?? 128000,
+                  contentLength: best['contentLength'] ?? 0,
+                  url: streamUrl,
+                ),
+                expiresAt: DateTime.now().add(const Duration(hours: 4)),
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Cobalt API resolver for direct audio streams.
+  Future<StreamInfo?> _fetchCobaltStream(String videoId) async {
+    final instances = [
+      'https://api.cobalt.tools/api/json',
+      'https://cobalt.kwiatekm.pl/api/json',
+    ];
+
+    for (final endpoint in instances) {
+      try {
+        final res = await _httpClient.post(
+          Uri.parse(endpoint),
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'url': 'https://youtu.be/$videoId',
+            'downloadMode': 'audio',
+            'audioFormat': 'mp3',
+          }),
+        ).timeout(const Duration(milliseconds: 3500));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final streamUrl = data['url'] as String? ?? '';
+          if (streamUrl.isNotEmpty) {
+            debugPrint('[InnerTube] Stream resolved via Cobalt ($endpoint)');
+            return StreamInfo(
+              videoId: videoId,
+              streamUrl: streamUrl,
+              format: AudioFormat(
+                itag: 140,
+                mimeType: 'audio/mp3',
+                bitrate: 128000,
+                contentLength: 0,
+                url: streamUrl,
+              ),
+              expiresAt: DateTime.now().add(const Duration(hours: 4)),
+            );
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
   }
 
   Future<StreamInfo?> _fetchPlayerStream(
@@ -192,7 +368,8 @@ class InnerTubeApiClient {
           'clientVersion': clientVersion,
           'hl': 'en',
           'gl': 'US',
-          if (clientName == 'ANDROID_MUSIC') 'androidSdkVersion': 30,
+          if (clientName == 'ANDROID' || clientName == 'ANDROID_MUSIC' || clientName == 'ANDROID_TESTSUITE')
+            'androidSdkVersion': 30,
           if (clientName == 'IOS') ...{
             'deviceModel': 'iPhone16,2',
             'osName': 'iPhone',
@@ -205,7 +382,7 @@ class InnerTubeApiClient {
             'osVersion': '10',
           },
         },
-        if (clientName == 'TVHTML5_SIMPLY_EMBEDDED_PLAYER')
+        if (clientName == 'TVHTML5_SIMPLY_EMBEDDED_PLAYER' || clientName == 'WEB_EMBEDDED_PLAYER')
           'thirdParty': {
             'embedUrl': 'https://www.youtube.com',
           },
@@ -216,6 +393,8 @@ class InnerTubeApiClient {
           'html5Preference': 'HTML5_PREF_WANTS',
         },
       },
+      'contentCheckOk': true,
+      'racyCheckOk': true,
     };
 
     final customHeaders = <String, String>{
@@ -317,50 +496,6 @@ class InnerTubeApiClient {
     }
   }
 
-  /// Piped API public proxy fallback for guaranteed streaming reliability.
-  Future<StreamInfo?> _fetchPipedStream(String videoId) async {
-    final instances = [
-      'https://pipedapi.kavin.rocks',
-      'https://api.piped.private.coffee',
-      'https://piped-api.lunar.icu',
-    ];
-
-    for (final base in instances) {
-      try {
-        final res = await _httpClient.get(
-          Uri.parse('$base/streams/$videoId'),
-          headers: {'Accept': 'application/json'},
-        ).timeout(const Duration(seconds: 4));
-
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          final audioStreams = (data['audioStreams'] as List<dynamic>?) ?? [];
-          if (audioStreams.isNotEmpty) {
-            audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
-            final best = audioStreams.first as Map<String, dynamic>;
-            final streamUrl = best['url'] as String? ?? '';
-            if (streamUrl.isNotEmpty) {
-              debugPrint('[InnerTube] Stream resolved via Piped fallback ($base)');
-              return StreamInfo(
-                videoId: videoId,
-                streamUrl: streamUrl,
-                format: AudioFormat(
-                  itag: best['itag'] ?? 140,
-                  mimeType: best['mimeType'] ?? 'audio/mp4',
-                  bitrate: best['bitrate'] ?? 128000,
-                  contentLength: 0,
-                  url: streamUrl,
-                ),
-                expiresAt: DateTime.now().add(const Duration(hours: 4)),
-              );
-            }
-          }
-        }
-      } catch (_) {}
-    }
-    return null;
-  }
-
   /// Get "Up Next" / Endless Radio queue based on the currently playing song.
   Future<List<SongModel>> getRadioQueue(String videoId) async {
     final payload = ApiConstants.defaultClientContext();
@@ -449,22 +584,88 @@ class InnerTubeApiClient {
           ?['text']?['runs']?[0];
       final title = titleRun?['text'] as String? ?? '';
 
+      // Identify artist, album, and duration properly
       String artist = 'Unknown Artist';
       String? album;
+      int durationSeconds = 0;
+
       if (flexColumns.length > 1) {
         final runs = flexColumns[1]['musicResponsiveListItemFlexColumnRenderer']
             ?['text']?['runs'] as List<dynamic>?;
         if (runs != null && runs.isNotEmpty) {
-          artist = runs[0]['text'] as String? ?? 'Unknown Artist';
-          if (runs.length > 2) {
-            album = runs[2]['text'] as String?;
+          // Check if first item is a type badge like "Song", "Video", "Single", "EP", "Album", or "เพลง"
+          int artistIndex = 0;
+          final firstText = (runs[0]['text'] as String? ?? '').trim().toLowerCase();
+          final badgeKeywords = {'song', 'video', 'single', 'ep', 'album', 'เพลง', 'วิดีโอ'};
+
+          if (badgeKeywords.contains(firstText) && runs.length > 2) {
+            artistIndex = 2;
+          }
+
+          artist = runs[artistIndex]['text'] as String? ?? 'Unknown Artist';
+
+          // Check album: usually after artist and bullet separator
+          if (runs.length > artistIndex + 2) {
+            final possibleAlbum = runs[artistIndex + 2]['text'] as String? ?? '';
+            if (!possibleAlbum.contains(':') &&
+                !possibleAlbum.contains('views') &&
+                !possibleAlbum.contains('plays') &&
+                !possibleAlbum.contains('การดู')) {
+              album = possibleAlbum;
+            }
+          }
+
+          // Search runs backwards for duration
+          for (final run in runs.reversed) {
+            final t = (run['text'] as String? ?? '').trim();
+            if (t.contains(':') && RegExp(r'^\d+:\d+(:\d+)?$').hasMatch(t)) {
+              durationSeconds = _parseDurationStringToSeconds(t);
+              break;
+            }
           }
         }
       }
 
-      final videoId = renderer['playlistItemData']?['videoId'] as String? ??
-          titleRun?['navigationEndpoint']?['watchEndpoint']?['videoId'] as String? ??
-          '';
+      // Check fixedColumns if duration is still 0
+      if (durationSeconds == 0 && renderer['fixedColumns'] != null) {
+        final fixedCols = renderer['fixedColumns'] as List<dynamic>?;
+        if (fixedCols != null && fixedCols.isNotEmpty) {
+          final durRun = fixedCols[0]['musicResponsiveListItemFixedColumnRenderer']
+              ?['text']?['runs']?[0]?['text'] as String?;
+          if (durRun != null && durRun.contains(':')) {
+            durationSeconds = _parseDurationStringToSeconds(durRun);
+          }
+        }
+      }
+
+      // Video ID extraction: check playlistItemData, title watchEndpoint, overlay, navigationEndpoint, and all runs
+      String videoId = renderer['playlistItemData']?['videoId'] as String? ?? '';
+      if (videoId.isEmpty) {
+        videoId = titleRun?['navigationEndpoint']?['watchEndpoint']?['videoId'] as String? ?? '';
+      }
+      if (videoId.isEmpty) {
+        videoId = renderer['overlay']?['musicItemThumbnailOverlayRenderer']
+            ?['content']?['musicPlayButtonRenderer']
+            ?['playNavigationEndpoint']?['watchEndpoint']?['videoId'] as String? ?? '';
+      }
+      if (videoId.isEmpty) {
+        videoId = renderer['navigationEndpoint']?['watchEndpoint']?['videoId'] as String? ?? '';
+      }
+      if (videoId.isEmpty) {
+        for (final col in flexColumns) {
+          final runs = col['musicResponsiveListItemFlexColumnRenderer']?['text']?['runs'] as List<dynamic>?;
+          if (runs != null) {
+            for (final r in runs) {
+              final vid = r['navigationEndpoint']?['watchEndpoint']?['videoId'] as String?;
+              if (vid != null && vid.isNotEmpty) {
+                videoId = vid;
+                break;
+              }
+            }
+          }
+          if (videoId.isNotEmpty) break;
+        }
+      }
 
       final thumbnails = renderer['thumbnail']?['musicThumbnailRenderer']
           ?['thumbnail']?['thumbnails'] as List<dynamic>?;
@@ -478,7 +679,7 @@ class InnerTubeApiClient {
           title: title,
           artist: artist,
           album: album,
-          durationSeconds: 0,
+          durationSeconds: durationSeconds,
           thumbnailUrl: thumbUrl,
         );
       }
@@ -490,12 +691,26 @@ class InnerTubeApiClient {
     try {
       final id = renderer['videoId'] as String? ?? '';
       final title = renderer['title']?['runs']?[0]?['text'] as String? ?? 'Unknown Title';
-      final artist = renderer['longBylineText']?['runs']?[0]?['text'] as String? ?? 'Unknown Artist';
+
+      String artist = 'Unknown Artist';
       String? album;
-      final bylineRuns = renderer['longBylineText']?['runs'] as List<dynamic>?;
-      if (bylineRuns != null && bylineRuns.length > 2) {
-        album = bylineRuns[2]['text'] as String?;
+      final bylineRuns = (renderer['longBylineText']?['runs'] ?? renderer['shortBylineText']?['runs']) as List<dynamic>?;
+      if (bylineRuns != null && bylineRuns.isNotEmpty) {
+        int artistIdx = 0;
+        final firstText = (bylineRuns[0]['text'] as String? ?? '').trim().toLowerCase();
+        final badgeKeywords = {'song', 'video', 'single', 'ep', 'album', 'เพลง', 'วิดีโอ'};
+        if (badgeKeywords.contains(firstText) && bylineRuns.length > 2) {
+          artistIdx = 2;
+        }
+        artist = bylineRuns[artistIdx]['text'] as String? ?? 'Unknown Artist';
+        if (bylineRuns.length > artistIdx + 2) {
+          final possibleAlbum = bylineRuns[artistIdx + 2]['text'] as String? ?? '';
+          if (!possibleAlbum.contains(':')) {
+            album = possibleAlbum;
+          }
+        }
       }
+
       final durationStr = renderer['lengthText']?['runs']?[0]?['text'] as String? ?? '0:00';
       final thumbnails = renderer['thumbnail']?['thumbnails'] as List<dynamic>?;
       final thumbUrl = (thumbnails != null && thumbnails.isNotEmpty)

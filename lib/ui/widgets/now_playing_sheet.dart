@@ -153,18 +153,26 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                               size: 22,
                             ),
                             onPressed: () async {
-                              if (!_isDownloaded) {
+                              if (_isDownloaded) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('กำลังดาวน์โหลดเพลงไว้ฟังออฟไลน์...')),
+                                  const SnackBar(content: Text('เพลงนี้ดาวน์โหลดเก็บไว้ใน /storage/emulated/0/Music แล้ว')),
                                 );
-                                final ok = await _downloadService.downloadSong(_currentSong);
-                                if (mounted) {
-                                  setState(() => _isDownloaded = ok);
-                                  if (ok) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์!')),
-                                    );
-                                  }
+                                return;
+                              }
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('กำลังดาวน์โหลดเพลงไปยัง /storage/emulated/0/Music...')),
+                              );
+                              final ok = await _downloadService.downloadSong(_currentSong);
+                              if (mounted) {
+                                setState(() => _isDownloaded = ok);
+                                if (ok) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('ดาวน์โหลดเสร็จสมบูรณ์! บันทึกที่ /storage/emulated/0/Music')),
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('ดาวน์โหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')),
+                                  );
                                 }
                               }
                             },
@@ -198,23 +206,29 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
 
   Widget _buildAlbumArtView() {
     return Padding(
-      padding: const EdgeInsets.all(28.0),
+      padding: const EdgeInsets.symmetric(horizontal: 32.0, vertical: 20.0),
       child: Center(
         child: AspectRatio(
           aspectRatio: 1,
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(28),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.5),
-                  blurRadius: 30,
-                  offset: const Offset(0, 15),
+                  color: AppTheme.primary.withOpacity(0.35),
+                  blurRadius: 36,
+                  spreadRadius: -4,
+                  offset: const Offset(0, 16),
+                ),
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.6),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10),
                 ),
               ],
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(28),
               child: CachedNetworkImage(
                 imageUrl: _currentSong.thumbnailUrl,
                 fit: BoxFit.cover,
@@ -407,15 +421,24 @@ class _NowPlayingSheetState extends State<NowPlayingSheet> with SingleTickerProv
                   }
 
                   return Container(
-                    decoration: const BoxDecoration(
+                    width: 68,
+                    height: 68,
+                    decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Colors.white,
+                      gradient: AppTheme.primaryGradient,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.primary.withOpacity(0.4),
+                          blurRadius: 20,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
                     ),
                     child: IconButton(
-                      iconSize: 42,
+                      iconSize: 34,
                       icon: Icon(
                         isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
-                        color: Colors.black,
+                        color: Colors.white,
                       ),
                       onPressed: () {
                         if (isPlaying) {

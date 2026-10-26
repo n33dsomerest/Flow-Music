@@ -127,7 +127,14 @@ class AudioPlayerService {
     }
   }
 
-  Future<void> play() async => _player.play();
+  Future<void> play() async {
+    if (_player.audioSource == null && _currentIndex >= 0 && _currentIndex < _queue.length) {
+      await _loadAndPlayCurrent();
+    } else {
+      await _player.play();
+    }
+  }
+
   Future<void> pause() async => await _player.pause();
   Future<void> seek(Duration position) async => await _player.seek(position);
 
@@ -166,17 +173,20 @@ class AudioPlayerService {
         }
       }
 
-      // 2. Resolve direct stream URL using InnerTube Multi-Client Fallback (ANDROID_MUSIC / IOS / TV / Piped)
+      // 2. Resolve direct stream URL using Multi-Source Fallback (Invidious / Piped / Cobalt / InnerTube)
       final streamInfo = await _apiClient.getStreamInfo(song.id);
       if (streamInfo != null && streamInfo.streamUrl.isNotEmpty) {
         debugPrint('[AudioPlayerService] Setting stream URL (${streamInfo.format.mimeType})');
         await _player.stop();
-        // Do NOT send desktop Referer header - it triggers 403 Forbidden from googlevideo.com CDN
+        Map<String, String>? headers;
+        if (streamInfo.streamUrl.contains('googlevideo.com')) {
+          headers = {
+            'User-Agent': 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
+          };
+        }
         await _player.setUrl(
           streamInfo.streamUrl,
-          headers: {
-            'User-Agent': 'com.google.android.youtube/19.29.35 (Linux; U; Android 11)',
-          },
+          headers: headers,
         );
         _player.play();
       } else {

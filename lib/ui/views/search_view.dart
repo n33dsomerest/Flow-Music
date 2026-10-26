@@ -10,7 +10,7 @@ import '../../services/local_playlist_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/now_playing_sheet.dart';
 
-/// Instant YouTube Music Search View with song action sheets.
+/// Cyber-Glass YouTube Music Instant Search with Suggested Topics & Action Sheet.
 class SearchView extends StatefulWidget {
   const SearchView({super.key});
 
@@ -24,6 +24,19 @@ class _SearchViewState extends State<SearchView> {
   final AudioPlayerService _audioService = AudioPlayerService();
   final DownloadCacheService _downloadService = DownloadCacheService();
   final LocalPlaylistService _playlistService = LocalPlaylistService();
+
+  final List<String> _suggestedTags = [
+    'เพลงฮิต TikTok',
+    'Three Man Down',
+    'Billkin & PP',
+    'NONT TANONT',
+    'Jeff Satur',
+    'Taylor Swift',
+    'T-POP Top 50',
+    'Lo-Fi Study',
+    'เพลงรักฟังสบาย',
+    'Bowkylion',
+  ];
 
   Timer? _debounceTimer;
   List<SongModel> _searchResults = [];
@@ -39,7 +52,7 @@ class _SearchViewState extends State<SearchView> {
       return;
     }
 
-    _debounceTimer = Timer(const Duration(milliseconds: 500), () async {
+    _debounceTimer = Timer(const Duration(milliseconds: 400), () async {
       setState(() => _isSearching = true);
       final results = await _apiClient.search(query.trim());
       if (mounted) {
@@ -49,6 +62,11 @@ class _SearchViewState extends State<SearchView> {
         });
       }
     });
+  }
+
+  void _searchTag(String tag) {
+    _searchController.text = tag;
+    _onSearchChanged(tag);
   }
 
   @override
@@ -62,118 +80,210 @@ class _SearchViewState extends State<SearchView> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
+        bottom: false,
         child: Column(
           children: [
-            // Search Input Header
+            // Modern Floating Search Input
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
+                height: 52,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
-                  color: AppTheme.surfaceLight,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white10),
+                  color: AppTheme.surfaceLight.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.white.withOpacity(0.12), width: 1),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
                 child: Row(
                   children: [
-                    const Icon(CupertinoIcons.search, color: Colors.white54),
-                    const SizedBox(width: 10),
+                    const Icon(CupertinoIcons.search, color: AppTheme.primaryLight, size: 22),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: TextField(
                         controller: _searchController,
                         onChanged: _onSearchChanged,
-                        style: const TextStyle(color: Colors.white),
+                        style: const TextStyle(color: Colors.white, fontSize: 15),
                         decoration: const InputDecoration(
                           hintText: 'ค้นหาเพลง, ศิลปิน, อัลบั้ม...',
-                          hintStyle: TextStyle(color: Colors.white38),
+                          hintStyle: TextStyle(color: AppTheme.textMuted, fontSize: 14),
                           border: InputBorder.none,
+                          isDense: true,
                         ),
                       ),
                     ),
                     if (_searchController.text.isNotEmpty)
-                      IconButton(
-                        icon: const Icon(CupertinoIcons.clear_circled_solid, color: Colors.white54, size: 20),
-                        onPressed: () {
+                      GestureDetector(
+                        onTap: () {
                           _searchController.clear();
                           _onSearchChanged('');
                         },
+                        child: const Icon(CupertinoIcons.clear_circled_solid, color: AppTheme.textMuted, size: 20),
                       ),
                   ],
                 ),
               ),
             ),
 
-            // Search State / Results List
+            // Content Area: Suggested Topics vs Search Results
             Expanded(
               child: _isSearching
-                  ? const Center(child: CircularProgressIndicator(color: AppTheme.primary))
+                  ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryLight))
                   : _searchResults.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Icon(CupertinoIcons.music_note_list, size: 64, color: Colors.white24),
-                              SizedBox(height: 12),
-                              Text(
-                                'ค้นหาเพลงโปรดจาก YouTube Music',
-                                style: TextStyle(color: Colors.white54, fontSize: 16),
-                              ),
-                            ],
-                          ),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          itemCount: _searchResults.length,
-                          itemBuilder: (context, index) {
-                            final song = _searchResults[index];
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 10),
-                              decoration: AppTheme.glassDecoration(),
-                              child: ListTile(
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: CachedNetworkImage(
-                                    imageUrl: song.thumbnailUrl,
-                                    width: 48,
-                                    height: 48,
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                                title: Text(
-                                  song.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                                ),
-                                subtitle: Text(
-                                  song.artist,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white60, fontSize: 13),
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(CupertinoIcons.ellipsis_vertical, color: Colors.white54),
-                                  onPressed: () => _showSongOptionsSheet(song),
-                                ),
-                                onTap: () {
-                                  _audioService.playPlaylist(_searchResults, initialIndex: index);
-                                  showModalBottomSheet(
-                                    context: context,
-                                    isScrollControlled: true,
-                                    useSafeArea: true,
-                                    backgroundColor: Colors.transparent,
-                                    builder: (ctx) => NowPlayingSheet(song: song),
-                                  );
-                                },
-                              ),
-                            );
-                          },
-                        ),
+                      ? _buildInitialSuggestions()
+                      : _buildSearchResultsList(),
             ),
-            const SizedBox(height: 80),
           ],
         ),
       ),
+    );
+  }
+
+  /// Initial Screen with Quick Search Tags & Trending Topics
+  Widget _buildInitialSuggestions() {
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(CupertinoIcons.flame_fill, color: AppTheme.accentPink, size: 20),
+              SizedBox(width: 8),
+              Text(
+                'ค้นหายอดนิยม',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 10,
+            children: _suggestedTags.map((tag) {
+              return GestureDetector(
+                onTap: () => _searchTag(tag),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceLight.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(CupertinoIcons.search, size: 14, color: AppTheme.primaryLight),
+                      const SizedBox(width: 6),
+                      Text(
+                        tag,
+                        style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 36),
+          Center(
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceLight.withOpacity(0.35),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(CupertinoIcons.music_mic, size: 48, color: Colors.white24),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'ค้นหาเพลงโปรดจาก YouTube Music',
+                  style: TextStyle(color: Colors.white60, fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 160),
+        ],
+      ),
+    );
+  }
+
+  /// Results List View
+  Widget _buildSearchResultsList() {
+    return ListView.builder(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 160),
+      itemCount: _searchResults.length,
+      itemBuilder: (context, index) {
+        final song = _searchResults[index];
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: AppTheme.surface.withOpacity(0.65),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withOpacity(0.06)),
+          ),
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: CachedNetworkImage(
+                imageUrl: song.thumbnailUrl,
+                width: 48,
+                height: 48,
+                fit: BoxFit.cover,
+                errorWidget: (_, __, ___) => Container(
+                  width: 48,
+                  height: 48,
+                  color: AppTheme.surfaceLight,
+                  child: const Icon(CupertinoIcons.music_note, color: Colors.white30),
+                ),
+              ),
+            ),
+            title: Text(
+              song.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+            ),
+            subtitle: Text(
+              song.artist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(CupertinoIcons.ellipsis, color: Colors.white54, size: 20),
+                  onPressed: () => _showSongOptionsSheet(song),
+                ),
+              ],
+            ),
+            onTap: () {
+              _audioService.playPlaylist(_searchResults, initialIndex: index);
+              showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                useSafeArea: true,
+                backgroundColor: Colors.transparent,
+                builder: (ctx) => NowPlayingSheet(song: song),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -181,21 +291,41 @@ class _SearchViewState extends State<SearchView> {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppTheme.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => SafeArea(
         child: Wrap(
           children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+            ),
             ListTile(
               leading: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: CachedNetworkImage(imageUrl: song.thumbnailUrl, width: 40, height: 40, fit: BoxFit.cover),
+                borderRadius: BorderRadius.circular(8),
+                child: CachedNetworkImage(imageUrl: song.thumbnailUrl, width: 44, height: 44, fit: BoxFit.cover),
               ),
-              title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-              subtitle: Text(song.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54)),
+              title: Text(
+                song.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15),
+              ),
+              subtitle: Text(
+                song.artist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
             ),
-            const Divider(color: Colors.white12),
+            const Divider(color: Colors.white10),
             ListTile(
-              leading: const Icon(CupertinoIcons.play_arrow_solid, color: AppTheme.primary),
+              leading: const Icon(CupertinoIcons.play_circle_fill, color: AppTheme.primaryLight, size: 24),
               title: const Text('เล่นทันที', style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -210,8 +340,8 @@ class _SearchViewState extends State<SearchView> {
               },
             ),
             ListTile(
-              leading: const Icon(CupertinoIcons.text_badge_plus, color: Colors.white70),
-              title: const Text('เพิ่มเข้าคิว', style: TextStyle(color: Colors.white)),
+              leading: const Icon(CupertinoIcons.text_badge_plus, color: Colors.white70, size: 24),
+              title: const Text('เพิ่มเข้าคิวเล่นต่อ', style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
                 _audioService.addToQueue(song);
@@ -219,7 +349,7 @@ class _SearchViewState extends State<SearchView> {
               },
             ),
             ListTile(
-              leading: const Icon(CupertinoIcons.music_albums, color: AppTheme.secondary),
+              leading: const Icon(CupertinoIcons.music_albums, color: AppTheme.secondary, size: 24),
               title: const Text('เพิ่มเข้าเพลย์ลิสต์...', style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -227,7 +357,7 @@ class _SearchViewState extends State<SearchView> {
               },
             ),
             ListTile(
-              leading: const Icon(CupertinoIcons.arrow_down_circle, color: Colors.white70),
+              leading: const Icon(CupertinoIcons.arrow_down_circle, color: AppTheme.accentPink, size: 24),
               title: const Text('ดาวน์โหลดไว้ฟังออฟไลน์', style: TextStyle(color: Colors.white)),
               onTap: () async {
                 Navigator.pop(ctx);
@@ -238,6 +368,7 @@ class _SearchViewState extends State<SearchView> {
                 }
               },
             ),
+            const SizedBox(height: 12),
           ],
         ),
       ),
@@ -259,6 +390,7 @@ class _SearchViewState extends State<SearchView> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('เลือกเพลย์ลิสต์', style: TextStyle(color: Colors.white)),
         content: SizedBox(
           width: double.maxFinite,
@@ -268,6 +400,7 @@ class _SearchViewState extends State<SearchView> {
             itemBuilder: (c, i) {
               final p = playlists[i];
               return ListTile(
+                leading: const Icon(CupertinoIcons.music_note_list, color: AppTheme.primaryLight),
                 title: Text(p.title, style: const TextStyle(color: Colors.white)),
                 subtitle: Text('${p.songs.length} เพลง', style: const TextStyle(color: Colors.white54)),
                 onTap: () async {
